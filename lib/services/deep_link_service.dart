@@ -14,6 +14,7 @@ class DeepLinkService {
   StreamSubscription<Uri>? _sub;
   bool _initialized = false;
   String? _lastHandledUri;
+  DateTime? _lastHandledAt;
 
   final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
@@ -44,8 +45,14 @@ class DeepLinkService {
 
   void handleUri(Uri uri) {
     final uriStr = uri.toString();
-    if (_lastHandledUri == uriStr) return;
+    final now = DateTime.now();
+    if (_lastHandledUri == uriStr &&
+        _lastHandledAt != null &&
+        now.difference(_lastHandledAt!) < const Duration(seconds: 3)) {
+      return;
+    }
     _lastHandledUri = uriStr;
+    _lastHandledAt = now;
 
     // Determine target route and extract token
     // Supported formats:

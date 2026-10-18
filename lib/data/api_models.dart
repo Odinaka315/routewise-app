@@ -111,8 +111,8 @@ class GeocodeResult {
       address: (json['address'] as String?) ?? '',
       lat: (json['lat'] as num).toDouble(),
       lng: (json['lng'] as num).toDouble(),
-      placeId: json['place_provider_id'] as String?,
-      source: json['geocode_source'] as String?,
+      placeId: (json['place_provider_id'] ?? json['provider_place_id']) as String?,
+      source: (json['geocode_source'] ?? json['provider']) as String?,
     );
   }
 }

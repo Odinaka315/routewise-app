@@ -15,6 +15,7 @@ class AppTextField extends StatefulWidget {
     this.hint,
     this.keyboardType,
     this.dense = false,
+    this.suffixIcon,
   });
 
   final String? label;
@@ -30,6 +31,9 @@ class AppTextField extends StatefulWidget {
 
   /// Shorter field (used for the search box).
   final bool dense;
+
+  /// Optional custom suffix widget (overrides the obscure toggle).
+  final Widget? suffixIcon;
 
   @override
   State<AppTextField> createState() => _AppTextFieldState();
@@ -80,19 +84,20 @@ class _AppTextFieldState extends State<AppTextField> {
                 : Icon(widget.icon, size: 20, color: c.muted),
             prefixIconConstraints:
                 const BoxConstraints(minWidth: 44, minHeight: 20),
-            suffixIcon: widget.obscure
-                ? IconButton(
-                    onPressed: () => setState(() => _hidden = !_hidden),
-                    tooltip: _hidden ? 'Show password' : 'Hide password',
-                    icon: Icon(
-                      _hidden
-                          ? Icons.visibility_outlined
-                          : Icons.visibility_off_outlined,
-                      size: 20,
-                      color: c.muted,
-                    ),
-                  )
-                : null,
+            suffixIcon: widget.suffixIcon ??
+                (widget.obscure
+                    ? IconButton(
+                        onPressed: () => setState(() => _hidden = !_hidden),
+                        tooltip: _hidden ? 'Show password' : 'Hide password',
+                        icon: Icon(
+                          _hidden
+                              ? Icons.visibility_outlined
+                              : Icons.visibility_off_outlined,
+                          size: 20,
+                          color: c.muted,
+                        ),
+                      )
+                    : null),
             border: _border(c.line),
             enabledBorder: _border(c.line),
             focusedBorder: _border(c.primary, 1.5),

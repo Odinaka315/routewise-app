@@ -3,7 +3,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../data/models.dart';
-import '../data/sample_data.dart';
+import '../services/api_service.dart';
+import '../state/app_state.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_theme.dart';
 import '../utils/helpers.dart';
@@ -14,21 +15,141 @@ import 'history_screen.dart';
 import 'plan_screen.dart';
 
 /// Result of a route calculation: map + summary + ordered stops.
-///
-/// Distances, times and savings are demo values from the design. Plug in your
-/// routing API response here.
+/// When opened from the Trips list, loads the full trip detail (stops with
+/// leg distances / times) from the backend.  Falls back gracefully if the
+/// network is unavailable.
 class RouteScreen extends StatefulWidget {
-  const RouteScreen({super.key, required this.title, required this.stops});
+  const RouteScreen({
+    super.key,
+    this.tripId,
+    required this.title,
+    this.initialStops = const [],
+    this.initialDistance,
+    this.initialTime,
+    this.initialSavedPercent,
+    this.initialStarred = false,
+  });
 
+  /// Backend trip UUID. When present, trip detail is fetched on mount.
+  final String? tripId;
   final String title;
-  final List<Stop> stops;
+
+  /// Stops already resolved by the caller (e.g. after creating a new trip).
+  final List<Stop> initialStops;
+
+  /// Summary values shown immediately while the detail loads.
+  final String? initialDistance;
+  final String? initialTime;
+  final String? initialSavedPercent;
+  final bool initialStarred;
 
   @override
   State<RouteScreen> createState() => _RouteScreenState();
 }
 
 class _RouteScreenState extends State<RouteScreen> {
-  bool _starred = true;
+  late bool _starred;
+  late String _distance;
+  late String _time;
+  String? _savedPercent;
+  List<Stop> _stops = [];
+  bool _loadingDetail = false;
+  int _nextUid = 1000;
+
+  @override
+  void initState() {
+    super.initState();
+    _starred = widget.initialStarred;
+    _distance = widget.initialDistance ?? '—';
+    _time = widget.initialTime ?? '—';
+    _savedPercent = widget.initialSavedPercent;
+    _stops = List<Stop>.of(widget.initialStops);
+
+    if (widget.tripId != null) {
+      _fetchDetail(widget.tripId!);
+    }
+  }
+
+  Future<void> _fetchDetail(String tripId) async {
+    setState(() => _loadingDetail = true);
+    try {
+      final data = await ApiService.instance.getTrip(tripId);
+
+      final routeData = data['route'] as Map<String, dynamic>?;
+      final latestRun = data['latest_run'] as Map<String, dynamic>?;
+
+      final distM = (routeData?['total_distance_m'] ?? latestRun?['total_distance_m']) as num?;
+      final durS = (routeData?['total_duration_s'] ?? latestRun?['total_duration_s']) as num?;
+      final saved = routeData?['percent_saved'] as num?;
+
+      String newDist = _distance;
+      String newTime = _time;
+      String? newSaved = _savedPercent;
+
+      if (distM != null) {
+        newDist = '${(distM / 1000).toStringAsFixed(1)} km';
+      }
+      if (durS != null) {
+        final mins = (durS / 60).round();
+        if (mins >= 60) {
+          final h = mins ~/ 60;
+          final m = mins % 60;
+          newTime = '$h hr ${m > 0 ? '$m min' : ''}'.trim();
+        } else {
+          newTime = '$mins min';
+        }
+      }
+      if (saved != null) newSaved = '${saved.round()}%';
+
+      final List<Stop> newStops = [];
+
+      // Try to use the optimised stop order from route.stops (RouteStopOut)
+      final routeStops = routeData?['stops'] as List<dynamic>?;
+      if (routeStops != null && routeStops.isNotEmpty) {
+        for (final s in routeStops) {
+          if (s is Map<String, dynamic>) {
+            newStops.add(Stop(
+              uid: _nextUid++,
+              name: (s['name'] as String?) ?? 'Stop',
+              address: (s['address'] as String?) ?? '',
+              legDistanceM: (s['leg_distance_m'] as num?)?.toDouble(),
+              legDurationS: (s['leg_duration_s'] as num?)?.toDouble(),
+              lat: (s['lat'] as num?)?.toDouble(),
+              lng: (s['lng'] as num?)?.toDouble(),
+            ));
+          }
+        }
+      } else {
+        // Fallback: use input stops (StopOut)
+        final inputStops = data['stops'] as List<dynamic>?;
+        if (inputStops != null) {
+          for (final s in inputStops) {
+            if (s is Map<String, dynamic>) {
+              newStops.add(Stop(
+                uid: _nextUid++,
+                name: (s['name'] as String?) ?? 'Stop',
+                address: (s['address'] as String?) ?? '',
+                lat: (s['lat'] as num?)?.toDouble(),
+                lng: (s['lng'] as num?)?.toDouble(),
+              ));
+            }
+          }
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _distance = newDist;
+        _time = newTime;
+        _savedPercent = newSaved;
+        if (newStops.isNotEmpty) _stops = newStops;
+        _starred = (data['is_starred'] as bool?) ?? _starred;
+        _loadingDetail = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loadingDetail = false);
+    }
+  }
 
   void _backToTrips() => Navigator.of(context).popUntil((r) => r.isFirst);
 
@@ -38,7 +159,7 @@ class _RouteScreenState extends State<RouteScreen> {
         builder: (_) => PlanScreen(
           editing: true,
           sourceTitle: widget.title,
-          initialStops: widget.stops,
+          initialStops: _stops,
         ),
       ),
     );
@@ -46,8 +167,25 @@ class _RouteScreenState extends State<RouteScreen> {
 
   void _history() {
     Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => HistoryScreen(title: widget.title)),
+      MaterialPageRoute<void>(
+          builder: (_) => HistoryScreen(
+                title: widget.title,
+                tripId: widget.tripId,
+              )),
     );
+  }
+
+  void _toggleStar() {
+    final nextStar = !_starred;
+    setState(() => _starred = nextStar);
+    if (widget.tripId != null) {
+      ApiService.instance
+          .patchTrip(widget.tripId!, isStarred: nextStar)
+          .then((_) => appState.refreshTrips())
+          .catchError((_) {
+        if (mounted) setState(() => _starred = !nextStar);
+      });
+    }
   }
 
   @override
@@ -104,7 +242,7 @@ class _RouteScreenState extends State<RouteScreen> {
       children: [
         Positioned.fill(
           child: ResultMap(
-            stopCount: widget.stops.length,
+            stopCount: _stops.isNotEmpty ? _stops.length : 1,
             controlsBottom: wide ? 24 : 48,
           ),
         ),
@@ -140,7 +278,10 @@ class _RouteScreenState extends State<RouteScreen> {
                               overflow: TextOverflow.ellipsis,
                               style: AppText.heading(14.5, c.ink, weight: FontWeight.w700)),
                           const SizedBox(height: 2),
-                          Text('Calculated just now', style: AppText.body(11.2, c.muted)),
+                          Text(
+                            _loadingDetail ? 'Loading route details…' : 'Route ready',
+                            style: AppText.body(11.2, c.muted),
+                          ),
                         ],
                       ),
                     ),
@@ -154,7 +295,7 @@ class _RouteScreenState extends State<RouteScreen> {
                 label: _starred ? 'Unstar trip' : 'Star trip',
                 active: _starred,
                 elevated: true,
-                onPressed: () => setState(() => _starred = !_starred),
+                onPressed: _toggleStar,
               ),
               const SizedBox(width: 9),
               AppIconButton(
@@ -197,7 +338,7 @@ class _RouteScreenState extends State<RouteScreen> {
 
   Widget _panel(BuildContext context, bool wide) {
     final c = context.c;
-    final stops = widget.stops;
+    final stops = _stops;
     final start = AppButton(
       label: 'Start navigation',
       icon: Icons.arrow_forward_rounded,
@@ -233,11 +374,20 @@ class _RouteScreenState extends State<RouteScreen> {
                 color: c.primarySoft,
                 borderRadius: BorderRadius.circular(9),
               ),
-              child: Icon(Icons.auto_awesome_rounded, size: 17, color: c.primary),
+              child: _loadingDetail
+                  ? Padding(
+                      padding: const EdgeInsets.all(6),
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: c.primary),
+                    )
+                  : Icon(Icons.auto_awesome_rounded, size: 17, color: c.primary),
             ),
             const SizedBox(width: 9),
-            Text('ROUTE READY',
-                style: AppText.body(11.2, c.primary, weight: FontWeight.w800, letterSpacing: 1.1)),
+            Text(
+              _loadingDetail ? 'LOADING…' : 'ROUTE READY',
+              style: AppText.body(11.2, c.primary,
+                  weight: FontWeight.w800, letterSpacing: 1.1),
+            ),
           ],
         ),
         const SizedBox(height: 19),
@@ -250,26 +400,32 @@ class _RouteScreenState extends State<RouteScreen> {
                   Text(widget.title,
                       style: AppText.heading(wide ? 28 : 23, c.ink, height: 1.14)),
                   const SizedBox(height: 5),
-                  Text('Best route for ${stops.length} stops',
-                      style: AppText.body(15, c.muted)),
+                  Text(
+                    stops.isNotEmpty
+                        ? 'Best route for ${stops.length} stops'
+                        : 'Loading stop order…',
+                    style: AppText.body(15, c.muted),
+                  ),
                 ],
               ),
             ),
-            const SizedBox(width: 15),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
-              decoration: BoxDecoration(
-                color: c.accentSoft,
-                borderRadius: BorderRadius.circular(14),
+            if (_savedPercent != null) ...[
+              const SizedBox(width: 15),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
+                decoration: BoxDecoration(
+                  color: c.accentSoft,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Column(
+                  children: [
+                    Text(_savedPercent!, style: AppText.heading(23, c.accent)),
+                    Text('shorter route',
+                        style: AppText.body(10.4, c.accent, weight: FontWeight.w700)),
+                  ],
+                ),
               ),
-              child: Column(
-                children: [
-                  Text('24%', style: AppText.heading(23, c.accent)),
-                  Text('shorter route',
-                      style: AppText.body(10.4, c.accent, weight: FontWeight.w700)),
-                ],
-              ),
-            ),
+            ],
           ],
         ),
         const SizedBox(height: 25),
@@ -304,8 +460,22 @@ class _RouteScreenState extends State<RouteScreen> {
         ),
         const SizedBox(height: 7),
         Divider(height: 1, color: c.line),
-        for (var i = 0; i < stops.length; i++)
-          _OrderedStop(stop: stops[i], index: i, isLast: i == stops.length - 1),
+        if (_loadingDetail && stops.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24),
+            child: Center(
+              child: Column(
+                children: [
+                  CircularProgressIndicator(color: c.primary),
+                  const SizedBox(height: 12),
+                  Text('Loading route details…', style: AppText.body(14, c.muted)),
+                ],
+              ),
+            ),
+          )
+        else
+          for (var i = 0; i < stops.length; i++)
+            _OrderedStop(stop: stops[i], index: i, isLast: i == stops.length - 1),
         Divider(height: 1, color: c.line),
         const SizedBox(height: 10),
         Row(
@@ -332,9 +502,9 @@ class _RouteScreenState extends State<RouteScreen> {
   Widget _summary(BuildContext context, int stopCount) {
     final c = context.c;
     final cells = [
-      (Icons.map_outlined, 'Total distance', '34.6 km'),
-      (Icons.schedule_rounded, 'Estimated time', '1 hr 42 min'),
-      (Icons.location_on_outlined, 'Stops', '$stopCount stops'),
+      (Icons.map_outlined, 'Total distance', _distance),
+      (Icons.schedule_rounded, 'Estimated time', _time),
+      (Icons.location_on_outlined, 'Stops', '${stopCount > 0 ? stopCount : '—'} stops'),
     ];
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 4),
@@ -437,10 +607,10 @@ class _OrderedStop extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: AppText.body(12, c.muted)),
-                  if (index > 0) ...[
+                  if (index > 0 && stop.legSummary != null) ...[
                     const SizedBox(height: 6),
                     Text(
-                      '${sampleLegs[(index - 1) % sampleLegs.length]} from previous stop',
+                      '${stop.legSummary} from previous stop',
                       style: AppText.body(11, c.primary, weight: FontWeight.w600),
                     ),
                   ],

@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 
 import 'screens/app_shell.dart';
 import 'screens/auth_screen.dart';
-import 'screens/reset_password_screen.dart';
-import 'screens/verify_email_screen.dart';
 import 'services/deep_link_service.dart';
 import 'state/app_state.dart';
 import 'theme/app_theme.dart';
@@ -36,27 +34,6 @@ class RoutewiseApp extends StatelessWidget {
           darkTheme: AppTheme.dark(),
           themeMode: appState.themeMode,
           home: const RootGate(),
-          onGenerateRoute: (settings) {
-            final uri = Uri.tryParse(settings.name ?? '');
-            if (uri != null) {
-              final path = uri.path;
-              final token = uri.queryParameters['token'];
-
-              if (path == '/verify-email' || path == 'verify-email') {
-                return MaterialPageRoute<void>(
-                  builder: (_) => VerifyEmailScreen(token: token),
-                  settings: settings,
-                );
-              }
-              if (path == '/reset-password' || path == 'reset-password') {
-                return MaterialPageRoute<void>(
-                  builder: (_) => ResetPasswordScreen(token: token),
-                  settings: settings,
-                );
-              }
-            }
-            return null;
-          },
         );
       },
     );

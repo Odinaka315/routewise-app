@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../data/models.dart';
-import '../data/sample_data.dart';
+import '../services/api_service.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_theme.dart';
 import '../utils/helpers.dart';
@@ -9,10 +9,117 @@ import '../widgets/buttons.dart';
 import '../widgets/misc.dart';
 
 /// Every calculation made for a trip, newest first.
-class HistoryScreen extends StatelessWidget {
-  const HistoryScreen({super.key, required this.title});
+class HistoryScreen extends StatefulWidget {
+  const HistoryScreen({super.key, required this.title, this.tripId});
 
   final String title;
+  final String? tripId;
+
+  @override
+  State<HistoryScreen> createState() => _HistoryScreenState();
+}
+
+class _HistoryScreenState extends State<HistoryScreen> {
+  bool _loading = false;
+  List<RouteRun> _runs = [];
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.tripId != null) {
+      _loadRuns(widget.tripId!);
+    }
+  }
+
+  Future<void> _loadRuns(String tripId) async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final data = await ApiService.instance.getTripRuns(tripId);
+      final runs = <RouteRun>[];
+      for (final item in data) {
+        if (item is Map<String, dynamic>) {
+          final status = (item['status'] as String?) ?? 'failed';
+          final ready = status == 'succeeded';
+          final distM = (item['total_distance_m'] as num?)?.toDouble();
+          final durS = (item['total_duration_s'] as num?)?.toDouble();
+          final savedPct = (item['percent_saved'] as num?)?.toDouble();
+          final createdAt = item['created_at']?.toString() ?? '';
+          final solver = (item['solver'] as String?) ?? '';
+          final matrixBackend = (item['matrix_backend'] as String?) ?? '';
+
+          String distStr = '—';
+          if (distM != null) distStr = '${(distM / 1000).toStringAsFixed(1)} km';
+
+          String timeStr = '—';
+          if (durS != null) {
+            final mins = (durS / 60).round();
+            if (mins >= 60) {
+              final h = mins ~/ 60;
+              final m = mins % 60;
+              timeStr = '$h hr ${m > 0 ? '$m min' : ''}'.trim();
+            } else {
+              timeStr = '$mins min';
+            }
+          }
+
+          String dateStr = 'Unknown';
+          if (createdAt.isNotEmpty) {
+            final dt = DateTime.tryParse(createdAt);
+            if (dt != null) {
+              final now = DateTime.now();
+              final diff = now.difference(dt);
+              if (diff.inMinutes < 60) {
+                dateStr = 'Just now';
+              } else if (diff.inHours < 24) {
+                dateStr = '${diff.inHours}h ago';
+              } else {
+                dateStr = '${dt.day}/${dt.month}/${dt.year}, ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+              }
+            }
+          }
+
+          String meta = 'Balanced · One-way';
+          if (solver.isNotEmpty || matrixBackend.isNotEmpty) {
+            meta = [if (solver.isNotEmpty) solver, if (matrixBackend.isNotEmpty) matrixBackend]
+                .join(' · ');
+          }
+
+          String summary;
+          if (!ready) {
+            summary = status == 'queued'
+                ? 'Queued'
+                : status == 'running'
+                    ? 'Calculating…'
+                    : 'Calculation failed';
+          } else {
+            summary = savedPct != null ? '${savedPct.round()}% saved' : 'Route ready';
+          }
+
+          runs.add(RouteRun(
+            date: dateStr,
+            meta: meta,
+            distance: distStr,
+            time: timeStr,
+            summary: summary,
+            ready: ready,
+          ));
+        }
+      }
+      setState(() {
+        _runs = runs;
+        _loading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -42,7 +149,7 @@ class HistoryScreen extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Eyebrow(title),
+                            Eyebrow(widget.title),
                             const SizedBox(height: 7),
                             Text('Run history',
                                 style: AppText.heading(wide ? 34 : 28, c.ink, height: 1.14)),
@@ -55,11 +162,56 @@ class HistoryScreen extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 32),
-                  for (var i = 0; i < sampleRuns.length; i++)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 11),
-                      child: _RunCard(run: sampleRuns[i], index: i),
-                    ),
+                  if (_loading)
+                    Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(32),
+                        child: Column(
+                          children: [
+                            CircularProgressIndicator(color: c.primary),
+                            const SizedBox(height: 12),
+                            Text('Loading run history…', style: AppText.body(14, c.muted)),
+                          ],
+                        ),
+                      ),
+                    )
+                  else if (_error != null)
+                    Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(32),
+                        child: Column(
+                          children: [
+                            Icon(Icons.error_outline_rounded, size: 48, color: c.danger),
+                            const SizedBox(height: 12),
+                            Text('Could not load run history.', style: AppText.body(15, c.ink)),
+                            const SizedBox(height: 6),
+                            Text(_error!, style: AppText.body(12, c.muted), textAlign: TextAlign.center),
+                          ],
+                        ),
+                      ),
+                    )
+                  else if (_runs.isEmpty)
+                    Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(32),
+                        child: Column(
+                          children: [
+                            Icon(Icons.history_rounded, size: 48, color: c.muted),
+                            const SizedBox(height: 12),
+                            Text('No run history yet.', style: AppText.body(15, c.ink)),
+                            const SizedBox(height: 6),
+                            Text('Run calculations will appear here.',
+                                style: AppText.body(12, c.muted)),
+                          ],
+                        ),
+                      ),
+                    )
+                  else
+                    for (var i = 0; i < _runs.length; i++)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 11),
+                        child: _RunCard(run: _runs[i], index: i),
+                      ),
                 ],
               ),
             ),

@@ -3,8 +3,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../data/api_models.dart';
 import '../data/models.dart';
-import '../data/sample_data.dart';
 import '../services/api_service.dart';
 import '../state/app_state.dart';
 import '../theme/app_colors.dart';
@@ -40,13 +40,17 @@ class PlanScreen extends StatefulWidget {
 
 class _PlanScreenState extends State<PlanScreen> {
   late final TextEditingController _title;
+  late final TextEditingController _searchCtrl;
   late List<Stop> _stops;
   late int _optimise;
   late int _routeType;
   int _nextUid = 1000;
   bool _showAdd = false;
   bool _calculating = false;
+  bool _searching = false;
+  List<GeocodeResult> _geocodeResults = [];
   Timer? _timer;
+  Timer? _debounce;
 
   @override
   void initState() {
@@ -56,8 +60,8 @@ class _PlanScreenState extends State<PlanScreen> {
           ? '${widget.sourceTitle} · copy'
           : '${weekdayName(DateTime.now())} mainland drops',
     );
-    // Demo data: starts with 4 stops like the design. Start empty in a real app.
-    _stops = List<Stop>.of(widget.initialStops ?? sampleStops.take(4));
+    _searchCtrl = TextEditingController();
+    _stops = List<Stop>.of(widget.initialStops ?? []);
     _optimise = appState.defaultOptimise;
     _routeType = appState.defaultRouteType;
   }
@@ -65,22 +69,57 @@ class _PlanScreenState extends State<PlanScreen> {
   @override
   void dispose() {
     _timer?.cancel();
+    _debounce?.cancel();
     _title.dispose();
+    _searchCtrl.dispose();
     super.dispose();
   }
 
-  void _addStop() {
+  void _addStopFromResult(GeocodeResult result) {
     if (_stops.length >= 50) {
       showInfo(context, 'You can add up to 50 stops.');
       return;
     }
-    // Placeholder: a real app would geocode the searched address, a dropped
-    // map pin, GPS position or pasted list here.
-    final base = sampleStops[_stops.length % sampleStops.length];
     setState(() {
-      _stops = [..._stops, base.copyWith(uid: _nextUid++)];
+      _stops = [
+        ..._stops,
+        Stop(
+          uid: _nextUid++,
+          name: result.name,
+          address: result.address,
+          lat: result.lat,
+          lng: result.lng,
+        ),
+      ];
+      _geocodeResults = [];
+      _searchCtrl.clear();
       _showAdd = false;
     });
+  }
+
+  void _onSearchChanged(String query) {
+    _debounce?.cancel();
+    if (query.trim().isEmpty) {
+      setState(() => _geocodeResults = []);
+      return;
+    }
+    _debounce = Timer(const Duration(milliseconds: 450), () => _runSearch(query));
+  }
+
+  Future<void> _runSearch(String query) async {
+    if (!mounted) return;
+    setState(() => _searching = true);
+    try {
+      final results = await ApiService.instance.geocodeSearch(query);
+      if (mounted) {
+        setState(() {
+          _geocodeResults = results;
+          _searching = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _searching = false);
+    }
   }
 
   void _removeStop(int uid) {
@@ -184,7 +223,14 @@ class _PlanScreenState extends State<PlanScreen> {
 
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute<void>(
-        builder: (_) => RouteScreen(title: title, stops: finalStops),
+        builder: (_) => RouteScreen(
+          tripId: tripId,
+          title: title,
+          initialStops: finalStops,
+          initialDistance: distStr,
+          initialTime: timeStr,
+          initialSavedPercent: savedPercent,
+        ),
       ),
       (route) => route.isFirst,
     );
@@ -431,7 +477,7 @@ class _PlanScreenState extends State<PlanScreen> {
               physics: const NeverScrollableScrollPhysics(),
               buildDefaultDragHandles: false,
               itemCount: _stops.length,
-              onReorder: _reorder,
+              onReorderItem: (oldIndex, newIndex) => _reorder(oldIndex, newIndex),
               proxyDecorator: (child, index, animation) =>
                   Material(color: c.surface, elevation: 6, child: child),
               itemBuilder: (context, index) {
@@ -490,45 +536,73 @@ class _PlanScreenState extends State<PlanScreen> {
       child: AppSurface(
         padding: const EdgeInsets.all(13),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const AppTextField(
+            AppTextField(
               icon: Icons.search_rounded,
               placeholder: 'Search an address in Nigeria',
+              controller: _searchCtrl,
+              onChanged: _onSearchChanged,
+              suffixIcon: _searching
+                  ? Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: c.primary,
+                        ),
+                      ),
+                    )
+                  : null,
             ),
-            InkWell(
-              onTap: _addStop,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 5),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 35,
-                      height: 35,
-                      decoration: BoxDecoration(
-                        color: c.primarySoft,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Icon(Icons.location_on_outlined, size: 20, color: c.primary),
+            if (_geocodeResults.isNotEmpty) ...
+              _geocodeResults.map(
+                (r) => InkWell(
+                  onTap: () => _addStopFromResult(r),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 5),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 35,
+                          height: 35,
+                          decoration: BoxDecoration(
+                            color: c.primarySoft,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Icon(Icons.location_on_outlined, size: 20, color: c.primary),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(r.name,
+                                  style: AppText.body(15, c.ink, weight: FontWeight.w500)),
+                              const SizedBox(height: 2),
+                              Text(r.address,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: AppText.body(12, c.muted)),
+                            ],
+                          ),
+                        ),
+                        Icon(Icons.add_rounded, size: 20, color: c.muted),
+                      ],
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('Yaba Dispatch Point',
-                              style: AppText.body(15, c.ink, weight: FontWeight.w500)),
-                          const SizedBox(height: 2),
-                          Text('Herbert Macaulay Way, Yaba, Lagos',
-                              style: AppText.body(12, c.muted)),
-                        ],
-                      ),
-                    ),
-                    Icon(Icons.add_rounded, size: 20, color: c.muted),
-                  ],
+                  ),
                 ),
+            )
+            else if (_searchCtrl.text.isNotEmpty && !_searching)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 5),
+                child: Text('No results found. Try a different search.',
+                    style: AppText.body(13, c.muted)),
               ),
-            ),
-            Divider(height: 1, color: c.line),
+            if (_geocodeResults.isNotEmpty || _searchCtrl.text.isNotEmpty)
+              Divider(height: 1, color: c.line),
             const SizedBox(height: 12),
             if (wide)
               Row(
@@ -541,7 +615,7 @@ class _PlanScreenState extends State<PlanScreen> {
                           icon: methods[i].$1,
                           title: methods[i].$2,
                           subtitle: methods[i].$3,
-                          onTap: _addStop,
+                          onTap: () => showInfo(context, '${methods[i].$2} is coming soon'),
                         ),
                       ),
                     ),
@@ -557,7 +631,7 @@ class _PlanScreenState extends State<PlanScreen> {
                         icon: methods[i].$1,
                         title: methods[i].$2,
                         subtitle: methods[i].$3,
-                        onTap: _addStop,
+                        onTap: () => showInfo(context, '${methods[i].$2} is coming soon'),
                       ),
                     ),
                 ],

@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../data/models.dart';
-import '../data/sample_data.dart';
 import '../services/api_service.dart';
 
 /// App-wide state (auth, theme, preferences and trips).
@@ -10,10 +9,10 @@ import '../services/api_service.dart';
 class AppState extends ChangeNotifier {
   bool _isAuthenticated = false;
   ThemeMode _themeMode = ThemeMode.light;
-  String _userName = 'Ola Adebayo';
-  String _userEmail = 'ola@dispatch.ng';
+  String _userName = 'Rider';
+  String _userEmail = '';
   bool _emailVerified = false;
-  List<Trip> _trips = List<Trip>.of(sampleTrips);
+  List<Trip> _trips = [];
   bool _isLoadingTrips = false;
 
   /// 0 = Fastest, 1 = Balanced, 2 = Shortest.
@@ -33,16 +32,44 @@ class AppState extends ChangeNotifier {
   bool get isEmailVerified => _emailVerified;
   bool get isLoadingTrips => _isLoadingTrips;
 
-  String get firstName => _userName.split(' ').first;
-  String get initials => _userName
-      .split(' ')
-      .where((part) => part.isNotEmpty)
-      .take(2)
-      .map((part) => part[0].toUpperCase())
-      .join();
+  String get firstName => _userName.isNotEmpty ? _userName.split(' ').first : 'Rider';
+  String get initials {
+    if (_userName.isEmpty) return 'R';
+    final parts = _userName.split(' ').where((part) => part.isNotEmpty).take(2);
+    if (parts.isEmpty) return 'R';
+    return parts.map((part) => part[0].toUpperCase()).join();
+  }
 
   List<Trip> get trips => List<Trip>.unmodifiable(_trips);
   List<Trip> get starredTrips => _trips.where((t) => t.starred).toList();
+
+  int get routesThisMonth {
+    final now = DateTime.now();
+    return _trips.where((t) {
+      if (t.createdAt == null) return true;
+      return t.createdAt!.year == now.year && t.createdAt!.month == now.month;
+    }).length;
+  }
+
+  double get totalDistancePlannedKm {
+    double total = 0;
+    for (final t in _trips) {
+      if (t.distanceM != null) total += (t.distanceM! / 1000);
+    }
+    return total;
+  }
+
+  double get totalTimeHours {
+    double total = 0;
+    for (final t in _trips) {
+      if (t.durationS != null) total += (t.durationS! / 3600);
+    }
+    return total;
+  }
+
+  String get routesThisMonthText => '$routesThisMonth';
+  String get totalDistancePlannedText => '${totalDistancePlannedKm.toStringAsFixed(1)} km';
+  String get totalTimePlannedText => '${totalTimeHours.toStringAsFixed(1)} hrs';
 
   /// Initializes authentication state and fetches real user & trips from the backend.
   Future<void> init() async {
@@ -174,9 +201,10 @@ class AppState extends ChangeNotifier {
             }
           }
 
-          String dateStr = 'Recent';
+          DateTime? dt;
+          String dateStr = 'Recently';
           if (createdAt.isNotEmpty) {
-            final dt = DateTime.tryParse(createdAt);
+            dt = DateTime.tryParse(createdAt);
             if (dt != null) {
               final now = DateTime.now();
               final diff = now.difference(dt);
@@ -199,6 +227,9 @@ class AppState extends ChangeNotifier {
               time: timeStr,
               date: dateStr,
               starred: isStarred,
+              distanceM: distM,
+              durationS: durS,
+              createdAt: dt,
             ),
           );
         }

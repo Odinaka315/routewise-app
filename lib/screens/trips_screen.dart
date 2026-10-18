@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../data/models.dart';
-import '../data/sample_data.dart';
 import '../state/app_state.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_theme.dart';
@@ -27,6 +26,16 @@ class _TripsScreenState extends State<TripsScreen> {
   bool _starredOnly = false;
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (appState.isAuthenticated) {
+        appState.refreshTrips();
+      }
+    });
+  }
+
+  @override
   void dispose() {
     _search.dispose();
     super.dispose();
@@ -40,8 +49,12 @@ class _TripsScreenState extends State<TripsScreen> {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => RouteScreen(
+          tripId: trip.id,
           title: trip.title,
-          stops: sampleStops.take(4).toList(),
+          initialDistance: trip.distance,
+          initialTime: trip.time,
+          initialSavedPercent: trip.savedPercent,
+          initialStarred: trip.starred,
         ),
       ),
     );
@@ -132,9 +145,9 @@ class _TripsScreenState extends State<TripsScreen> {
   Widget _stats(BuildContext context, bool wide) {
     final c = context.c;
     final items = [
-      (Icons.alt_route_rounded, c.accent, c.accentSoft, 'Routes this month', '18'),
-      (Icons.map_outlined, c.primary, c.primarySoft, 'Distance planned', '486 km'),
-      (Icons.schedule_rounded, c.blue, c.blueSoft, 'Time saved', '7.5 hrs'),
+      (Icons.alt_route_rounded, c.accent, c.accentSoft, 'Routes this month', appState.routesThisMonthText),
+      (Icons.map_outlined, c.primary, c.primarySoft, 'Distance planned', appState.totalDistancePlannedText),
+      (Icons.schedule_rounded, c.blue, c.blueSoft, 'Time planned', appState.totalTimePlannedText),
     ];
     return AppSurface(
       padding: EdgeInsets.symmetric(horizontal: wide ? 24 : 10, vertical: wide ? 18 : 13),

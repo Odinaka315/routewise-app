@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -16,6 +17,10 @@ class ApiService {
   static const _kRefreshTokenKey = 'routewise_refresh_token';
   static const _kUserKey = 'routewise_cached_user';
 
+  static const _secureStorage = FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
+
   AuthTokens? _tokens;
   AuthUser? _currentUser;
   bool _initialized = false;
@@ -24,12 +29,36 @@ class ApiService {
   AuthUser? get currentUser => _currentUser;
   bool get isAuthenticated => _tokens?.accessToken != null && _tokens!.accessToken.isNotEmpty;
 
-  /// Loads persisted tokens and user details from SharedPreferences.
+  /// Loads persisted tokens and user details.
+  /// Tokens are loaded securely from Keystore/Keychain, while user profile JSON is cached in SharedPreferences.
   Future<void> init() async {
     if (_initialized) return;
+
+    String? access;
+    String? refresh;
+    try {
+      access = await _secureStorage.read(key: _kAccessTokenKey);
+      refresh = await _secureStorage.read(key: _kRefreshTokenKey);
+    } catch (_) {}
+
     final prefs = await SharedPreferences.getInstance();
-    final access = prefs.getString(_kAccessTokenKey);
-    final refresh = prefs.getString(_kRefreshTokenKey);
+
+    // Migration from SharedPreferences if secure storage was empty
+    if (access == null || refresh == null) {
+      final oldAccess = prefs.getString(_kAccessTokenKey);
+      final oldRefresh = prefs.getString(_kRefreshTokenKey);
+      if (oldAccess != null && oldRefresh != null) {
+        access = oldAccess;
+        refresh = oldRefresh;
+        try {
+          await _secureStorage.write(key: _kAccessTokenKey, value: access);
+          await _secureStorage.write(key: _kRefreshTokenKey, value: refresh);
+          await prefs.remove(_kAccessTokenKey);
+          await prefs.remove(_kRefreshTokenKey);
+        } catch (_) {}
+      }
+    }
+
     final userJson = prefs.getString(_kUserKey);
 
     if (access != null && refresh != null) {
@@ -52,9 +81,14 @@ class ApiService {
     _tokens = tokens;
     if (user != null) _currentUser = user;
 
+    try {
+      await _secureStorage.write(key: _kAccessTokenKey, value: tokens.accessToken);
+      await _secureStorage.write(key: _kRefreshTokenKey, value: tokens.refreshToken);
+    } catch (_) {}
+
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kAccessTokenKey, tokens.accessToken);
-    await prefs.setString(_kRefreshTokenKey, tokens.refreshToken);
+    await prefs.remove(_kAccessTokenKey);
+    await prefs.remove(_kRefreshTokenKey);
     if (_currentUser != null) {
       await prefs.setString(_kUserKey, jsonEncode(_currentUser!.toJson()));
     }
@@ -63,6 +97,12 @@ class ApiService {
   Future<void> _clearSession() async {
     _tokens = null;
     _currentUser = null;
+
+    try {
+      await _secureStorage.delete(key: _kAccessTokenKey);
+      await _secureStorage.delete(key: _kRefreshTokenKey);
+    } catch (_) {}
+
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_kAccessTokenKey);
     await prefs.remove(_kRefreshTokenKey);
@@ -197,27 +237,37 @@ class ApiService {
     );
   }
 
-  Future<bool> _tryRefreshToken() async {
+  Future<bool>? _refreshInFlight;
+
+  Future<bool> _tryRefreshToken() {
+    // Everyone who hits a 401 at the same time shares one refresh call.
+    return _refreshInFlight ??= _doRefresh().whenComplete(() => _refreshInFlight = null);
+  }
+
+  Future<bool> _doRefresh() async {
     final refresh = _tokens?.refreshToken;
     if (refresh == null) return false;
 
     try {
-      final url = _uri('/auth/refresh');
-      final res = await http.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'refresh_token': refresh}),
-      ).timeout(const Duration(seconds: 15));
+      final res = await http
+          .post(
+            _uri('/auth/refresh'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'refresh_token': refresh}),
+          )
+          .timeout(const Duration(seconds: 30));
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
-        final newTokens = AuthTokens.fromJson(data);
-        await _persistSession(newTokens, _currentUser);
+        await _persistSession(AuthTokens.fromJson(data), _currentUser);
         return true;
       }
-    } catch (_) {}
-
-    await _clearSession();
+      if (res.statusCode == 401 || res.statusCode == 400 || res.statusCode == 422) {
+        await _clearSession(); // the server says this session is over
+      }
+    } catch (_) {
+      // Offline, timeout or server waking up: keep the session and let the caller fail this request.
+    }
     return false;
   }
 
@@ -339,11 +389,18 @@ class ApiService {
     return 'Password updated. You can now log in.';
   }
 
-  /// Logout (this device): POST /auth/logout
+  /// Logout (this device): POST /auth/logout  (needs the refresh token, not the access token)
   Future<void> logout() async {
+    final refresh = _tokens?.refreshToken;
     try {
-      if (isAuthenticated) {
-        await _send('POST', '/auth/logout');
+      if (refresh != null) {
+        await _send(
+          'POST',
+          '/auth/logout',
+          body: {'refresh_token': refresh},
+          requiresAuth: false,
+          retryOnUnauthorized: false,
+        );
       }
     } catch (_) {}
     await _clearSession();
@@ -437,16 +494,20 @@ class ApiService {
 
   /// Geocode search: GET /geocode/search
   Future<List<GeocodeResult>> geocodeSearch(String query, {int limit = 5}) async {
-    final data = await _send(
-      'GET',
-      '/geocode/search',
-      queryParameters: {'q': query, 'limit': limit},
-    );
-    if (data is Map && data['items'] is List) {
-      return (data['items'] as List)
-          .map((item) => GeocodeResult.fromJson(item as Map<String, dynamic>))
-          .toList();
-    }
+    if (query.trim().isEmpty) return [];
+    try {
+      final data = await _send(
+        'GET',
+        '/geocode/search',
+        queryParameters: {'q': query.trim(), 'limit': limit},
+      );
+      final list = (data is Map ? (data['results'] ?? data['items']) : null) as List<dynamic>?;
+      if (list != null) {
+        return list
+            .map((item) => GeocodeResult.fromJson(item as Map<String, dynamic>))
+            .toList();
+      }
+    } catch (_) {}
     return [];
   }
 }
