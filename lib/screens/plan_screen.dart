@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../data/models.dart';
 import '../data/sample_data.dart';
+import '../services/api_service.dart';
 import '../state/app_state.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_theme.dart';
@@ -94,32 +95,99 @@ class _PlanScreenState extends State<PlanScreen> {
     });
   }
 
-  void _calculate() {
+  Future<void> _calculate() async {
     setState(() => _calculating = true);
-    _timer = Timer(const Duration(milliseconds: 1800), () {
-      if (!mounted) return;
-      final typed = _title.text.trim();
-      final title = typed.isEmpty ? 'Untitled route' : typed;
-      // Demo result values. Replace with the response from your routing API.
-      appState.addTrip(
-        Trip(
-          id: DateTime.now().microsecondsSinceEpoch.toString(),
+    final typed = _title.text.trim();
+    final title = typed.isEmpty ? 'Untitled route' : typed;
+    final preset = _optimise == 0 ? 'fastest' : _optimise == 2 ? 'shortest' : 'balanced';
+    final openPath = _routeType == 0;
+
+    String distStr = '34.6 km';
+    String timeStr = '1 hr 42 min';
+    String? savedPercent = '24%';
+    String tripId = DateTime.now().microsecondsSinceEpoch.toString();
+    List<Stop> finalStops = _stops;
+
+    if (ApiService.instance.isAuthenticated) {
+      try {
+        final stopPayloads = _stops.map((s) => {
+          'name': s.name,
+          'address': s.address,
+        }).toList();
+
+        final res = await ApiService.instance.createTrip(
           title: title,
-          stops: _stops.length,
-          distance: '34.6 km',
-          time: '1 hr 42 min',
-          date: 'Just now',
-          savedPercent: '24%',
-          editedFrom: widget.editing ? widget.sourceTitle : null,
-        ),
-      );
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute<void>(
-          builder: (_) => RouteScreen(title: title, stops: _stops),
-        ),
-        (route) => route.isFirst,
-      );
-    });
+          stops: stopPayloads,
+          openPath: openPath,
+          preset: preset,
+        );
+
+        tripId = res['id']?.toString() ?? tripId;
+        final run = res['latest_run'] as Map<String, dynamic>?;
+        final route = res['route'] as Map<String, dynamic>?;
+
+        final distM = (route?['total_distance_m'] ?? run?['total_distance_m']) as num?;
+        final durS = (route?['total_duration_s'] ?? run?['total_duration_s']) as num?;
+        final saved = (run?['percent_saved']) as num?;
+
+        if (distM != null) {
+          distStr = '${(distM / 1000).toStringAsFixed(1)} km';
+        }
+        if (durS != null) {
+          final mins = (durS / 60).round();
+          if (mins >= 60) {
+            final h = mins ~/ 60;
+            final m = mins % 60;
+            timeStr = '$h hr ${m > 0 ? '$m min' : ''}'.trim();
+          } else {
+            timeStr = '$mins min';
+          }
+        }
+        if (saved != null) {
+          savedPercent = '${saved.round()}%';
+        }
+
+        final serverStops = res['stops'] as List<dynamic>?;
+        if (serverStops != null && serverStops.isNotEmpty) {
+          final mapped = <Stop>[];
+          for (var i = 0; i < serverStops.length; i++) {
+            final st = serverStops[i] as Map<String, dynamic>;
+            mapped.add(Stop(
+              uid: _nextUid++,
+              name: (st['name'] as String?) ?? 'Stop ${i + 1}',
+              address: (st['address'] as String?) ?? '',
+            ));
+          }
+          finalStops = mapped;
+        }
+      } catch (_) {
+        // Fallback to local calculation if server has an issue
+      }
+    } else {
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+    }
+
+    if (!mounted) return;
+
+    appState.addTrip(
+      Trip(
+        id: tripId,
+        title: title,
+        stops: finalStops.length,
+        distance: distStr,
+        time: timeStr,
+        date: 'Just now',
+        savedPercent: savedPercent,
+        editedFrom: widget.editing ? widget.sourceTitle : null,
+      ),
+    );
+
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute<void>(
+        builder: (_) => RouteScreen(title: title, stops: finalStops),
+      ),
+      (route) => route.isFirst,
+    );
   }
 
   @override

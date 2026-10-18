@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
@@ -24,27 +26,109 @@ class _AuthScreenState extends State<AuthScreen> {
   final _email = TextEditingController();
   final _password = TextEditingController();
 
+  bool _loading = false;
+  bool _serverWakingUp = false;
+  Timer? _wakeUpTimer;
+
   @override
   void dispose() {
+    _wakeUpTimer?.cancel();
     _name.dispose();
     _email.dispose();
     _password.dispose();
     super.dispose();
   }
 
-  void _go(AuthView view) => setState(() => _view = view);
+  void _go(AuthView view) {
+    setState(() {
+      _view = view;
+      _loading = false;
+      _serverWakingUp = false;
+    });
+  }
 
-  void _submit() {
-    switch (_view) {
-      case AuthView.login:
-        appState.login(email: _email.text);
-      case AuthView.signup:
-        _go(AuthView.check);
-      case AuthView.forgot:
-        showInfo(context, 'Reset link sent. Check your inbox.');
-        _go(AuthView.login);
-      case AuthView.check:
-        showInfo(context, 'Confirmation email sent again.');
+  void _startWakeUpTimer() {
+    _wakeUpTimer?.cancel();
+    _wakeUpTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted && _loading) {
+        setState(() => _serverWakingUp = true);
+      }
+    });
+  }
+
+  void _stopWakeUpTimer() {
+    _wakeUpTimer?.cancel();
+    if (_serverWakingUp) {
+      setState(() => _serverWakingUp = false);
+    }
+  }
+
+  Future<void> _submit() async {
+    final email = _email.text.trim();
+    final password = _password.text;
+
+    if (email.isEmpty || !email.contains('@')) {
+      showInfo(context, 'Please enter a valid email address.');
+      return;
+    }
+
+    if ((_view == AuthView.login || _view == AuthView.signup) && password.isEmpty) {
+      showInfo(context, 'Please enter your password.');
+      return;
+    }
+
+    if (_view == AuthView.signup && password.length < 8) {
+      showInfo(context, 'Password must be at least 8 characters.');
+      return;
+    }
+
+    setState(() => _loading = true);
+    _startWakeUpTimer();
+
+    try {
+      switch (_view) {
+        case AuthView.login:
+          await appState.login(email: email, password: password);
+          if (!mounted) return;
+          _stopWakeUpTimer();
+          // Logged in successfully: AppState listener switches root to AppShell
+          break;
+
+        case AuthView.signup:
+          await appState.signup(
+            email: email,
+            password: password,
+            displayName: _name.text.trim().isNotEmpty ? _name.text.trim() : null,
+          );
+          if (!mounted) return;
+          _stopWakeUpTimer();
+          setState(() {
+            _loading = false;
+            _view = AuthView.check;
+          });
+          break;
+
+        case AuthView.forgot:
+          final msg = await appState.forgotPassword(email: email);
+          if (!mounted) return;
+          _stopWakeUpTimer();
+          showInfo(context, msg);
+          _go(AuthView.login);
+          break;
+
+        case AuthView.check:
+          final msg = await appState.resendVerification(email: email);
+          if (!mounted) return;
+          _stopWakeUpTimer();
+          showInfo(context, msg);
+          setState(() => _loading = false);
+          break;
+      }
+    } catch (e) {
+      if (!mounted) return;
+      _stopWakeUpTimer();
+      setState(() => _loading = false);
+      showInfo(context, e.toString());
     }
   }
 
@@ -202,20 +286,53 @@ class _AuthScreenState extends State<AuthScreen> {
       Text.rich(
         TextSpan(
           children: [
-            TextSpan(text: 'We sent a confirmation link to '),
+            const TextSpan(text: 'We sent a confirmation link to '),
             TextSpan(text: email, style: const TextStyle(fontWeight: FontWeight.w700)),
-            TextSpan(text: '. Open it to activate your account.'),
+            const TextSpan(text: '. Open it on this phone or in your browser to activate your account.'),
           ],
         ),
         style: AppText.body(15, c.muted, height: 1.5),
       ),
+      if (_serverWakingUp) ...[
+        const SizedBox(height: 16),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: c.primarySoft,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.info_outline_rounded, color: c.primary, size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Waking up the server, one moment…',
+                  style: AppText.body(13, c.ink),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
       const SizedBox(height: 26),
-      AppButton(label: 'Resend email', expand: true, onPressed: _submit),
-      const SizedBox(height: 10),
+      AppButton(
+        label: _loading ? 'Sending...' : 'Resend confirmation email',
+        expand: true,
+        onPressed: _loading ? null : _submit,
+      ),
+      const SizedBox(height: 12),
       Center(
         child: TextAction(
           label: 'Use a different email',
           onPressed: () => _go(AuthView.signup),
+        ),
+      ),
+      const SizedBox(height: 8),
+      Center(
+        child: TextAction(
+          label: 'Back to Log in',
+          onPressed: () => _go(AuthView.login),
         ),
       ),
     ];
@@ -238,11 +355,9 @@ class _AuthScreenState extends State<AuthScreen> {
     final intro = isForgot
         ? "Enter your email and we'll send you a secure reset link."
         : 'Quick, reliable routes are a few taps away.';
-    final button = isSignup
-        ? 'Create account'
-        : isForgot
-            ? 'Send reset link'
-            : 'Log in';
+    final button = _loading
+        ? (isSignup ? 'Creating account...' : isForgot ? 'Sending link...' : 'Logging in...')
+        : (isSignup ? 'Create account' : isForgot ? 'Send reset link' : 'Log in');
 
     return [
       Eyebrow(eyebrow),
@@ -275,7 +390,7 @@ class _AuthScreenState extends State<AuthScreen> {
           icon: Icons.lock_outline_rounded,
           controller: _password,
           obscure: true,
-          hint: isSignup ? 'Use 8+ characters with a number' : null,
+          hint: isSignup ? 'Use 8+ characters' : null,
         ),
       ],
       if (isLogin)
@@ -291,11 +406,39 @@ class _AuthScreenState extends State<AuthScreen> {
         )
       else
         const SizedBox(height: 20),
+      if (_serverWakingUp) ...[
+        Container(
+          margin: const EdgeInsets.only(bottom: 16),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: c.primarySoft,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.info_outline_rounded, color: c.primary, size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Waking up the server, one moment…',
+                  style: AppText.body(13, c.ink),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
       AppButton(
         label: button,
         expand: true,
-        onPressed: _submit,
-        trailing: const Icon(Icons.arrow_forward_rounded, size: 20, color: Colors.white),
+        onPressed: _loading ? null : _submit,
+        trailing: _loading
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+              )
+            : const Icon(Icons.arrow_forward_rounded, size: 20, color: Colors.white),
       ),
       const SizedBox(height: 20),
       Center(
@@ -304,13 +447,21 @@ class _AuthScreenState extends State<AuthScreen> {
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             Text(
-              isLogin ? 'New to Routewise? ' : 'Already have an account? ',
+              isLogin
+                  ? 'New to Routewise? '
+                  : isForgot
+                      ? 'Remembered your password? '
+                      : 'Already have an account? ',
               style: AppText.body(13.5, c.muted),
             ),
             GestureDetector(
               onTap: () => _go(isLogin ? AuthView.signup : AuthView.login),
               child: Text(
-                isLogin ? 'Create account' : 'Log in',
+                isLogin
+                    ? 'Create account'
+                    : isForgot
+                        ? 'Back to Log in'
+                        : 'Log in',
                 style: AppText.body(13.5, c.primary, weight: FontWeight.w700),
               ),
             ),

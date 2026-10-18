@@ -2,7 +2,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:routewise/data/models.dart';
 import 'package:routewise/state/app_state.dart';
 
+import 'package:shared_preferences/shared_preferences.dart';
+
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  SharedPreferences.setMockInitialValues({});
+
   test('toggleStar flips the starred flag and updates starredTrips', () {
     final state = AppState();
     expect(state.trips.firstWhere((t) => t.id == 't3').starred, isFalse);

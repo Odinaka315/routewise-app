@@ -62,9 +62,12 @@ class _TripsScreenState extends State<TripsScreen> {
                 t.title.toLowerCase().contains(query))
             .toList();
 
-        return SingleChildScrollView(
-          padding: EdgeInsets.fromLTRB(wide ? 56 : 16, wide ? 46 : 18, wide ? 56 : 16, 40),
-          child: Center(
+        return RefreshIndicator(
+          onRefresh: appState.refreshTrips,
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: EdgeInsets.fromLTRB(wide ? 56 : 16, wide ? 46 : 18, wide ? 56 : 16, 40),
+            child: Center(
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 1240),
               child: Column(
@@ -78,6 +81,7 @@ class _TripsScreenState extends State<TripsScreen> {
                   const SizedBox(height: 39),
                   _allTrips(context, wide, trips.length, filtered),
                 ],
+              ),
               ),
             ),
           ),

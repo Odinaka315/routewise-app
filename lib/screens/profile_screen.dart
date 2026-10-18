@@ -78,7 +78,7 @@ class ProfileScreen extends StatelessWidget {
         ],
       ),
     );
-    if (confirmed == true) appState.logout();
+    if (confirmed == true) await appState.logoutAll();
   }
 
   @override
@@ -229,16 +229,26 @@ class ProfileScreen extends StatelessWidget {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
                   decoration: BoxDecoration(
-                    color: c.primarySoft,
+                    color: appState.isEmailVerified ? c.primarySoft : c.dangerSoft,
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.check_rounded, size: 13, color: c.primary),
+                      Icon(
+                        appState.isEmailVerified ? Icons.check_rounded : Icons.info_outline_rounded,
+                        size: 13,
+                        color: appState.isEmailVerified ? c.primary : c.danger,
+                      ),
                       const SizedBox(width: 3),
-                      Text('Email confirmed',
-                          style: AppText.body(10.8, c.primary, weight: FontWeight.w700)),
+                      Text(
+                        appState.isEmailVerified ? 'Email confirmed' : 'Email not verified',
+                        style: AppText.body(
+                          10.8,
+                          appState.isEmailVerified ? c.primary : c.danger,
+                          weight: FontWeight.w700,
+                        ),
+                      ),
                     ],
                   ),
                 ),
