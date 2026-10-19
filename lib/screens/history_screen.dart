@@ -228,13 +228,52 @@ class _RunCard extends StatelessWidget {
   final RouteRun run;
   final int index;
 
+  void _showRunDetails(BuildContext context, RouteRun run, int index) {
+    final c = context.c;
+    Widget row(String label, String value) => Padding(
+          padding: const EdgeInsets.symmetric(vertical: 9),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(width: 110, child: Text(label, style: AppText.body(13.5, c.muted))),
+              Expanded(
+                child: Text(value, style: AppText.body(14.5, c.ink, weight: FontWeight.w600)),
+              ),
+            ],
+          ),
+        );
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: c.surface,
+      showDragHandle: true,
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Calculation ${index + 1}', style: AppText.heading(18, c.ink)),
+              const SizedBox(height: 8),
+              row('When', run.date),
+              row('Result', run.summary),
+              row('Distance', run.distance),
+              row('Time', run.time),
+              if (run.meta.isNotEmpty) row('Method', run.meta),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.c;
     final compact = isCompact(context);
     return AppSurface(
       padding: EdgeInsets.all(compact ? 14 : 18),
-      onTap: () => showInfo(context, 'Run details are coming soon'),
+      onTap: () => _showRunDetails(context, run, index),
       child: Row(
         crossAxisAlignment: compact ? CrossAxisAlignment.start : CrossAxisAlignment.center,
         children: [

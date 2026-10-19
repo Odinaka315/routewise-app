@@ -7,12 +7,16 @@ class ApiException implements Exception {
     this.statusCode,
     this.isNetworkError = false,
     this.isTimeout = false,
+    this.unresolved = const [],
   });
 
   final String message;
   final int? statusCode;
   final bool isNetworkError;
   final bool isTimeout;
+
+  /// Addresses the server could not locate (HTTP 422 from `POST /trips`).
+  final List<String> unresolved;
 
   @override
   String toString() => message;

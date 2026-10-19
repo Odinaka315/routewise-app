@@ -151,6 +151,7 @@ class ApiService {
     }
 
     String message = 'An unexpected error occurred.';
+    var unresolved = <String>[];
     if (responseBody != null && responseBody.isNotEmpty) {
       try {
         final decoded = jsonDecode(responseBody);
@@ -159,6 +160,11 @@ class ApiService {
             final detail = decoded['detail'];
             if (detail is String) {
               message = detail;
+            } else if (detail is Map) {
+              // e.g. {"message": "Some addresses could not be located.", "unresolved": ["'12 Foo St'"]}
+              message = (detail['message'] ?? message).toString();
+              final list = detail['unresolved'];
+              if (list is List) unresolved = list.map((e) => e.toString()).toList();
             } else if (detail is List && detail.isNotEmpty) {
               final first = detail.first;
               if (first is Map && first['msg'] != null) {
@@ -176,7 +182,7 @@ class ApiService {
       }
     }
 
-    return ApiException(message, statusCode: statusCode);
+    return ApiException(message, statusCode: statusCode, unresolved: unresolved);
   }
 
   Future<dynamic> _send(
@@ -320,6 +326,16 @@ class ApiService {
   /// Get Current User: GET /auth/me
   Future<AuthUser> getMe() async {
     final data = await _send('GET', '/auth/me');
+    final user = AuthUser.fromJson(data as Map<String, dynamic>);
+    _currentUser = user;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kUserKey, jsonEncode(user.toJson()));
+    return user;
+  }
+
+  /// Change the display name: PATCH /auth/me
+  Future<AuthUser> updateProfile({required String displayName}) async {
+    final data = await _send('PATCH', '/auth/me', body: {'display_name': displayName});
     final user = AuthUser.fromJson(data as Map<String, dynamic>);
     _currentUser = user;
     final prefs = await SharedPreferences.getInstance();
@@ -482,6 +498,40 @@ class ApiService {
     await _send('DELETE', '/trips/$tripId');
   }
 
+  /// Solve a trip again: POST /trips/{id}/runs (returns the new, queued run).
+  Future<Map<String, dynamic>> recalculateTrip(String tripId) async {
+    final data = await _send('POST', '/trips/$tripId/runs');
+    return data as Map<String, dynamic>;
+  }
+
+  /// Polls `GET /trips/{id}` until the latest run has finished (succeeded or
+  /// failed) or [timeout] passes, and returns the last trip detail it saw.
+  ///
+  /// `POST /trips` answers immediately with a *queued* run; the real route
+  /// (order, distance, time, road geometry) only exists once it has finished.
+  Future<Map<String, dynamic>> waitForRun(
+    String tripId, {
+    Duration timeout = const Duration(seconds: 90),
+    Duration interval = const Duration(milliseconds: 1500),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    var detail = await getTrip(tripId);
+    while (true) {
+      final run = detail['latest_run'];
+      if (run is! Map) return detail;
+      final status = run['status'];
+      if (status == 'succeeded' || status == 'failed') return detail;
+      if (DateTime.now().isAfter(deadline)) return detail;
+      await Future<void>.delayed(interval);
+      try {
+        detail = await getTrip(tripId);
+      } on ApiException catch (e) {
+        // A dropped connection while polling is not the end of the world.
+        if (!(e.isNetworkError || e.isTimeout)) rethrow;
+      }
+    }
+  }
+
   /// Get trip run history: GET /trips/{id}/runs
   Future<List<dynamic>> getTripRuns(String tripId) async {
     final data = await _send('GET', '/trips/$tripId/runs');
@@ -493,21 +543,34 @@ class ApiService {
   // ==========================================
 
   /// Geocode search: GET /geocode/search
-  Future<List<GeocodeResult>> geocodeSearch(String query, {int limit = 5}) async {
-    if (query.trim().isEmpty) return [];
-    try {
-      final data = await _send(
-        'GET',
-        '/geocode/search',
-        queryParameters: {'q': query.trim(), 'limit': limit},
-      );
-      final list = (data is Map ? (data['results'] ?? data['items']) : null) as List<dynamic>?;
-      if (list != null) {
-        return list
-            .map((item) => GeocodeResult.fromJson(item as Map<String, dynamic>))
-            .toList();
-      }
-    } catch (_) {}
-    return [];
+  ///
+  /// Results are biased toward ([nearLat], [nearLng]) (central Lagos by default)
+  /// so that "Allen Avenue" finds the one in Ikeja first. Errors are thrown so
+  /// the screen can tell the rider that search is down, instead of pretending
+  /// the address does not exist.
+  Future<List<GeocodeResult>> geocodeSearch(
+    String query, {
+    int limit = 6,
+    double? nearLat,
+    double? nearLng,
+  }) async {
+    final q = query.trim();
+    if (q.length < 2) return [];
+    final data = await _send(
+      'GET',
+      '/geocode/search',
+      queryParameters: {
+        'q': q,
+        'limit': limit,
+        'lat': nearLat ?? AppConfig.defaultLat,
+        'lng': nearLng ?? AppConfig.defaultLng,
+      },
+    );
+    final list = (data is Map ? (data['results'] ?? data['items']) : null) as List<dynamic>?;
+    if (list == null) return [];
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(GeocodeResult.fromJson)
+        .toList();
   }
 }

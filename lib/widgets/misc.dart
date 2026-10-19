@@ -67,15 +67,16 @@ class Eyebrow extends StatelessWidget {
 }
 
 class StatusChip extends StatelessWidget {
-  const StatusChip({super.key, this.failed = false});
+  const StatusChip({super.key, this.failed = false, this.calculating = false});
 
   final bool failed;
+  final bool calculating;
 
   @override
   Widget build(BuildContext context) {
     final c = context.c;
-    final fg = failed ? c.danger : c.primary;
-    final bg = failed ? c.dangerSoft : c.primarySoft;
+    final fg = failed ? c.danger : (calculating ? c.warning : c.primary);
+    final bg = failed ? c.dangerSoft : (calculating ? c.soft : c.primarySoft);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
       decoration: BoxDecoration(
@@ -92,7 +93,7 @@ class StatusChip extends StatelessWidget {
           ),
           const SizedBox(width: 6),
           Text(
-            failed ? 'Failed' : 'Ready',
+            failed ? 'Failed' : (calculating ? 'Calculating' : 'Ready'),
             style: AppText.body(11.5, fg, weight: FontWeight.w700),
           ),
         ],
