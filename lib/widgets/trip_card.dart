@@ -1,13 +1,16 @@
 import 'package:flutter/material.dart';
 
+import '../data/api_models.dart';
 import '../data/models.dart';
 import '../state/app_state.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_theme.dart';
 
 import '../utils/helpers.dart';
+import 'action_sheet.dart';
 import 'buttons.dart';
 import 'misc.dart';
+import 'trip_dialogs.dart';
 
 class TripCard extends StatelessWidget {
   const TripCard({
@@ -22,6 +25,56 @@ class TripCard extends StatelessWidget {
 
   /// Left indent of the stats row (aligns it under the title on wide screens).
   final double indentMeta;
+
+  Future<void> _guard(BuildContext context, Future<void> Function() action) async {
+    try {
+      await action();
+    } on ApiException catch (e) {
+      if (context.mounted) showInfo(context, e.message);
+    }
+  }
+
+  void _showActions(BuildContext context) {
+    showActionSheet(
+      context,
+      title: trip.title,
+      actions: [
+        SheetAction(
+          icon: Icons.edit_outlined,
+          label: 'Rename trip',
+          onTap: () async {
+            final name = await promptRenameTrip(context, trip.title);
+            if (name != null && name != trip.title && context.mounted) {
+              await _guard(context, () => appState.renameTrip(trip.id, name));
+            }
+          },
+        ),
+        SheetAction(
+          icon: trip.starred ? Icons.star_border_rounded : Icons.star_rounded,
+          label: trip.starred ? 'Remove star' : 'Star trip',
+          onTap: () => appState.toggleStar(trip.id),
+        ),
+        SheetAction(
+          icon: Icons.refresh_rounded,
+          label: 'Recalculate route',
+          onTap: () async {
+            await _guard(context, () => appState.retryTrip(trip.id));
+            if (context.mounted) showInfo(context, 'Recalculating "${trip.title}"…');
+          },
+        ),
+        SheetAction(
+          icon: Icons.delete_outline_rounded,
+          label: 'Delete trip',
+          danger: true,
+          onTap: () async {
+            if (await confirmDeleteTrip(context, trip.title) && context.mounted) {
+              await _guard(context, () => appState.deleteTrip(trip.id));
+            }
+          },
+        ),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -73,12 +126,11 @@ class TripCard extends StatelessWidget {
                 active: trip.starred,
                 onPressed: () => appState.toggleStar(trip.id),
               ),
-              if (!compact)
-                AppIconButton(
-                  icon: Icons.more_horiz_rounded,
-                  label: 'Trip actions',
-                  onPressed: () => showInfo(context, 'Trip actions are coming soon'),
-                ),
+              AppIconButton(
+                icon: Icons.more_horiz_rounded,
+                label: 'Trip actions',
+                onPressed: () => _showActions(context),
+              ),
             ],
           ),
           if (trip.editedFrom != null) ...[
@@ -113,16 +165,25 @@ class TripCard extends StatelessWidget {
             decoration: BoxDecoration(border: Border(top: BorderSide(color: c.line))),
             child: Row(
               children: [
-                StatusChip(failed: trip.failed),
-                SizedBox(width: compact ? 10 : 16),
-                _Meta(icon: Icons.map_outlined, text: trip.distance),
-                SizedBox(width: compact ? 10 : 16),
-                _Meta(icon: Icons.schedule_rounded, text: trip.time),
-                const Spacer(),
+                Expanded(
+                  child: Wrap(
+                    spacing: compact ? 10 : 16,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      StatusChip(failed: trip.failed, calculating: trip.calculating),
+                      _Meta(icon: Icons.map_outlined, text: trip.distance),
+                      _Meta(icon: Icons.schedule_rounded, text: trip.time),
+                    ],
+                  ),
+                ),
                 if (trip.failed)
                   TextAction(
                     label: 'Try again',
-                    onPressed: () => showInfo(context, 'Retrying route calculation…'),
+                    onPressed: () async {
+                      await _guard(context, () => appState.retryTrip(trip.id));
+                      if (context.mounted) showInfo(context, 'Recalculating "${trip.title}"…');
+                    },
                   )
                 else if (wide && trip.savedPercent != null)
                   Text(

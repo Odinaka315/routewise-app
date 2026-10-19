@@ -5,12 +5,10 @@ import 'package:path_drawing/path_drawing.dart';
 
 import '../theme/app_colors.dart';
 import '../theme/app_theme.dart';
-import '../utils/helpers.dart';
-import 'buttons.dart';
 
-// The design uses an illustrated map (SVG paths), not a real map. These
-// widgets paint the same illustration. To use a real map, replace them with
-// google_maps_flutter / flutter_map and keep the same pin styling.
+// MiniMap below is a decorative illustration (SVG paths) used on the sign-in
+// screen only. The real, interactive map is RouteMap in route_map.dart; it
+// reuses MapPin from this file.
 
 class _MapData {
   _MapData({
@@ -41,21 +39,6 @@ final _MapData _miniMapData = _MapData(
     'M500-20c-80 100-80 160-30 220s20 120-20 200',
   ],
   routePath: 'M90 280C140 240 170 260 205 205S270 135 325 165s70 0 105-65',
-);
-
-final _MapData _resultMapData = _MapData(
-  width: 900,
-  height: 700,
-  roadPaths: const [
-    'M-20 100C130 160 220 40 390 130s310 20 560-20',
-    'M90 720C100 500 230 460 310 260S520 10 620-30',
-    'M-50 520c180-20 240 90 420 20s320-130 600-50',
-    'M170-30c20 190 70 300 280 390s210 180 250 380',
-    'M780-20c-150 190-120 300-40 390s20 230-70 370',
-    'M-30 320c180 10 260-80 400-80s280 90 560 10',
-  ],
-  waterPath: 'M-30 660c190-90 270 20 430-40s310-10 530-100v210H-30Z',
-  routePath: 'M130 555C210 480 260 525 315 405S410 245 510 300s120-30 185-145',
 );
 
 class _MapPainter extends CustomPainter {
@@ -238,7 +221,7 @@ class _MapBase extends StatelessWidget {
   }
 }
 
-/// Small preview map used on the planner and auth screens.
+/// Decorative illustrated map for the sign-in screen (not interactive).
 /// Give it a bounded height and width from the parent.
 class MiniMap extends StatelessWidget {
   const MiniMap({super.key, this.radius = 22, this.pinCount = 4});
@@ -272,98 +255,6 @@ class MiniMap extends StatelessWidget {
         ],
         pinSize: 29,
         largeStyle: false,
-        overlay: Positioned(
-          top: 14,
-          right: 14,
-          child: Column(
-            children: [
-              AppIconButton(
-                icon: Icons.my_location_rounded,
-                label: 'Fit all stops',
-                elevated: true,
-                onPressed: () => showInfo(context, 'Map controls are a placeholder'),
-              ),
-              const SizedBox(height: 7),
-              AppIconButton(
-                icon: Icons.layers_outlined,
-                label: 'Map style',
-                elevated: true,
-                onPressed: () => showInfo(context, 'Map controls are a placeholder'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Full-bleed map for the route result screen.
-class ResultMap extends StatelessWidget {
-  const ResultMap({super.key, this.stopCount = 4, this.controlsBottom = 24});
-
-  final int stopCount;
-  final double controlsBottom;
-
-  static const List<Offset> _pins = [
-    Offset(0.14, 0.76),
-    Offset(0.34, 0.57),
-    Offset(0.51, 0.39),
-    Offset(0.71, 0.20),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.c;
-    final count = math.max(2, math.min(stopCount, 4));
-    return _MapBase(
-      data: _resultMapData,
-      pins: _pins.take(count).toList(),
-      labels: const [
-        _MapLabel('IKEJA', 0.48, 0.13),
-        _MapLabel('MARYLAND', 0.71, 0.67),
-      ],
-      pinSize: 36,
-      largeStyle: true,
-      overlay: Positioned(
-        right: 14,
-        bottom: controlsBottom,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Material(
-              color: c.surface,
-              elevation: 3,
-              shadowColor: Colors.black38,
-              shape: const StadiumBorder(),
-              clipBehavior: Clip.antiAlias,
-              child: InkWell(
-                onTap: () => showInfo(context, 'Map styles are a placeholder'),
-                child: SizedBox(
-                  height: 44,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 14),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.layers_outlined, size: 20, color: c.ink),
-                        const SizedBox(width: 8),
-                        Text('Standard', style: AppText.body(14, c.ink, weight: FontWeight.w500)),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 7),
-            AppIconButton(
-              icon: Icons.my_location_rounded,
-              label: 'Fit route',
-              elevated: true,
-              onPressed: () => showInfo(context, 'Map controls are a placeholder'),
-            ),
-          ],
-        ),
       ),
     );
   }

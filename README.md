@@ -67,3 +67,12 @@ The Figma project is UI only, so this is too:
 - Date and greeting on the Trips screen use the real current time.
 - The map and the options block on the planner stay in the design's order
   (map below the form on phones).
+
+## Maps, address search and navigation
+
+- **Map**: `flutter_map` with OpenStreetMap / CARTO tiles by default (free, light use only). For a public release build with a Mapbox **public** token so tiles come from Mapbox:
+  `flutter run --dart-define=MAPBOX_TOKEN=pk.your-token` (also works for `flutter build apk`).
+- **Address search** is done by the backend. Nominatim (the default) knows few Lagos house numbers. In Render set `GEOCODER_PROVIDER=mapbox` and `MAPBOX_ACCESS_TOKEN=sk.or.pk...` for better results. When search finds nothing, riders can add the address as typed or drop a pin.
+- **Navigation**: "Start navigation" steps through the stops and opens Google Maps or Waze for turn-by-turn directions to the next one.
+- **Android/iOS permissions**: location (for "My location") is declared in `AndroidManifest.xml` and `Info.plist`.
+- "Edit profile" needs backend PR `PATCH /auth/me`.

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../data/api_models.dart';
 import '../state/app_state.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_theme.dart';
@@ -52,6 +53,47 @@ class ProfileScreen extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _editProfile(BuildContext context) async {
+    final c = context.c;
+    final controller = TextEditingController(text: appState.userName);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: c.surface,
+        title: Text('Edit profile', style: AppText.heading(18, c.ink)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 100,
+          textCapitalization: TextCapitalization.words,
+          style: AppText.body(15, c.ink),
+          decoration: InputDecoration(
+            labelText: 'Display name',
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(controller.text.trim()),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (name == null || name.isEmpty || name == appState.userName) return;
+    try {
+      await appState.updateDisplayName(name);
+      if (context.mounted) showInfo(context, 'Profile updated');
+    } on ApiException catch (e) {
+      if (context.mounted) showInfo(context, e.message);
+    }
   }
 
   Future<void> _confirmLogoutAll(BuildContext context) async {
@@ -259,7 +301,13 @@ class ProfileScreen extends StatelessWidget {
             AppButton(
               label: 'Edit profile',
               variant: ButtonVariant.secondary,
-              onPressed: () => showInfo(context, 'Profile editing is coming soon'),
+              onPressed: () => _editProfile(context),
+            )
+          else
+            AppIconButton(
+              icon: Icons.edit_outlined,
+              label: 'Edit profile',
+              onPressed: () => _editProfile(context),
             ),
         ],
       ),

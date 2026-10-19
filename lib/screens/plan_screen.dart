@@ -2,20 +2,24 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:latlong2/latlong.dart';
 
+import '../config/app_config.dart';
 import '../data/api_models.dart';
 import '../data/models.dart';
 import '../services/api_service.dart';
+import '../services/location_service.dart';
 import '../state/app_state.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_theme.dart';
 import '../utils/helpers.dart';
 import '../widgets/buttons.dart';
 import '../widgets/fields.dart';
-import '../widgets/map_views.dart';
 import '../widgets/misc.dart';
+import '../widgets/route_map.dart';
 import '../widgets/segmented.dart';
 import 'calculating_view.dart';
+import 'pin_picker_screen.dart';
 import 'route_screen.dart';
 
 const List<String> _optimiseLabels = ['Fastest', 'Balanced', 'Shortest'];
@@ -48,8 +52,12 @@ class _PlanScreenState extends State<PlanScreen> {
   bool _showAdd = false;
   bool _calculating = false;
   bool _searching = false;
+  bool _locating = false;
+  bool _resolving = false;
+  int _searchSeq = 0;
+  String? _searchError;
+  String _searchedQuery = '';
   List<GeocodeResult> _geocodeResults = [];
-  Timer? _timer;
   Timer? _debounce;
 
   @override
@@ -68,58 +76,260 @@ class _PlanScreenState extends State<PlanScreen> {
 
   @override
   void dispose() {
-    _timer?.cancel();
     _debounce?.cancel();
     _title.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
 
-  void _addStopFromResult(GeocodeResult result) {
+  /// Where to centre address search: the last stop that is on the map, else Lagos.
+  LatLng get _searchBias {
+    for (var i = _stops.length - 1; i >= 0; i--) {
+      if (_stops[i].hasLocation) return LatLng(_stops[i].lat!, _stops[i].lng!);
+    }
+    return LatLng(AppConfig.defaultLat, AppConfig.defaultLng);
+  }
+
+  static String _nameFromAddress(String address) {
+    final first = address.split(',').first.trim();
+    return first.length >= 3 ? first : address.trim();
+  }
+
+  bool _canAddMore() {
     if (_stops.length >= 50) {
       showInfo(context, 'You can add up to 50 stops.');
-      return;
+      return false;
     }
+    return true;
+  }
+
+  void _appendStop(Stop stop) {
+    setState(() => _stops = [..._stops, stop]);
+  }
+
+  void _addStopFromResult(GeocodeResult result) {
+    if (!_canAddMore()) return;
     setState(() {
       _stops = [
         ..._stops,
         Stop(
           uid: _nextUid++,
-          name: result.name,
+          name: result.name.isNotEmpty ? result.name : _nameFromAddress(result.address),
           address: result.address,
           lat: result.lat,
           lng: result.lng,
+          source: result.source,
+          placeId: result.placeId,
         ),
       ];
       _geocodeResults = [];
+      _searchError = null;
+      _searchedQuery = '';
       _searchCtrl.clear();
-      _showAdd = false;
+      // The add panel stays open so several stops can be added in a row.
+    });
+  }
+
+  /// Adds whatever the rider typed, even if search found nothing. The server
+  /// tries to locate it when the route is calculated, and the rider can drop a
+  /// pin on it first by editing the stop.
+  void _addTyped() {
+    final text = _searchCtrl.text.trim();
+    if (text.length < 2 || !_canAddMore()) return;
+    _debounce?.cancel();
+    _searchSeq++; // ignore any search still in flight
+    setState(() {
+      _stops = [
+        ..._stops,
+        Stop(uid: _nextUid++, name: _nameFromAddress(text), address: text),
+      ];
+      _geocodeResults = [];
+      _searching = false;
+      _searchError = null;
+      _searchedQuery = '';
+      _searchCtrl.clear();
     });
   }
 
   void _onSearchChanged(String query) {
     _debounce?.cancel();
-    if (query.trim().isEmpty) {
-      setState(() => _geocodeResults = []);
+    final q = query.trim();
+    if (q.length < 2) {
+      _searchSeq++;
+      setState(() {
+        _geocodeResults = [];
+        _searching = false;
+        _searchError = null;
+        _searchedQuery = '';
+      });
       return;
     }
-    _debounce = Timer(const Duration(milliseconds: 450), () => _runSearch(query));
+    setState(() {}); // refresh the "use as typed" row
+    _debounce = Timer(const Duration(milliseconds: 500), () => _runSearch(q));
   }
 
   Future<void> _runSearch(String query) async {
     if (!mounted) return;
-    setState(() => _searching = true);
+    final seq = ++_searchSeq;
+    final near = _searchBias;
+    setState(() {
+      _searching = true;
+      _searchError = null;
+    });
     try {
-      final results = await ApiService.instance.geocodeSearch(query);
-      if (mounted) {
-        setState(() {
-          _geocodeResults = results;
-          _searching = false;
-        });
-      }
+      final results = await ApiService.instance.geocodeSearch(
+        query,
+        nearLat: near.latitude,
+        nearLng: near.longitude,
+      );
+      if (!mounted || seq != _searchSeq) return;
+      setState(() {
+        _geocodeResults = results;
+        _searchedQuery = query;
+        _searching = false;
+      });
+    } on ApiException catch (e) {
+      if (!mounted || seq != _searchSeq) return;
+      setState(() {
+        _geocodeResults = [];
+        _searchedQuery = query;
+        _searching = false;
+        _searchError = e.isNetworkError || e.isTimeout
+            ? e.message
+            : 'Address search is unavailable right now.';
+      });
     } catch (_) {
-      if (mounted) setState(() => _searching = false);
+      if (!mounted || seq != _searchSeq) return;
+      setState(() {
+        _searching = false;
+        _searchError = 'Address search is unavailable right now.';
+      });
     }
+  }
+
+  Future<void> _dropPin() async {
+    if (!_canAddMore()) return;
+    final bias = _searchBias;
+    final result = await Navigator.of(context).push<GeocodeResult>(
+      MaterialPageRoute<GeocodeResult>(
+        builder: (_) => PinPickerScreen(initialPoint: _stops.any((s) => s.hasLocation) ? bias : null),
+      ),
+    );
+    if (result != null && mounted) _addStopFromResult(result);
+  }
+
+  Future<void> _useMyLocation() async {
+    if (!_canAddMore()) return;
+    setState(() => _locating = true);
+    try {
+      final point = await LocationService.current();
+      if (!mounted) return;
+      _appendStop(
+        Stop(
+          uid: _nextUid++,
+          name: 'My location',
+          address: 'Current GPS position',
+          lat: double.parse(point.latitude.toStringAsFixed(6)),
+          lng: double.parse(point.longitude.toStringAsFixed(6)),
+          source: 'gps',
+        ),
+      );
+    } on LocationException catch (e) {
+      if (mounted) showInfo(context, e.message);
+    } finally {
+      if (mounted) setState(() => _locating = false);
+    }
+  }
+
+  Future<void> _pasteAddresses() async {
+    final text = await showDialog<String>(
+      context: context,
+      builder: (_) => const _PasteAddressesDialog(),
+    );
+    if (text == null || !mounted) return;
+    final lines = text
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.length >= 2)
+        .toList();
+    if (lines.isEmpty) return;
+    final room = 50 - _stops.length;
+    if (room <= 0) {
+      showInfo(context, 'You can add up to 50 stops.');
+      return;
+    }
+    final taken = lines.take(room).toList();
+    setState(() {
+      _stops = [
+        ..._stops,
+        for (final line in taken)
+          Stop(uid: _nextUid++, name: _nameFromAddress(line), address: line),
+      ];
+    });
+    if (taken.length < lines.length) {
+      showInfo(context, 'Added $room stops. The limit is 50.');
+    }
+    unawaited(_resolveMissing());
+  }
+
+  /// Looks up each stop that has no map position yet (pasted addresses), one
+  /// after another, and puts the best match on the map.
+  Future<void> _resolveMissing() async {
+    if (_resolving) return;
+    setState(() => _resolving = true);
+    final givenUp = <int>{};
+    try {
+      while (mounted) {
+        final index = _stops.indexWhere((s) => !s.hasLocation && !givenUp.contains(s.uid));
+        if (index == -1) break;
+        final stop = _stops[index];
+        givenUp.add(stop.uid);
+        final near = _searchBias;
+        try {
+          final found = await ApiService.instance.geocodeSearch(
+            stop.address.isNotEmpty ? stop.address : stop.name,
+            limit: 1,
+            nearLat: near.latitude,
+            nearLng: near.longitude,
+          );
+          if (!mounted) return;
+          final at = _stops.indexWhere((s) => s.uid == stop.uid);
+          if (found.isNotEmpty && at != -1) {
+            final hit = found.first;
+            final updated = [..._stops];
+            updated[at] = Stop(
+              uid: stop.uid,
+              name: stop.name,
+              address: stop.address,
+              lat: hit.lat,
+              lng: hit.lng,
+              source: hit.source,
+              placeId: hit.placeId,
+            );
+            setState(() => _stops = updated);
+          }
+        } on ApiException {
+          // Search is down: leave this one for the server to locate later.
+        }
+      }
+    } finally {
+      if (mounted) setState(() => _resolving = false);
+    }
+  }
+
+  Future<void> _editStop(Stop stop) async {
+    final c = context.c;
+    final updated = await showModalBottomSheet<Stop>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: c.surface,
+      builder: (_) => _EditStopSheet(stop: stop),
+    );
+    if (updated == null || !mounted) return;
+    setState(() {
+      _stops = [for (final s in _stops) s.uid == updated.uid ? updated : s];
+    });
   }
 
   void _removeStop(int uid) {
@@ -128,6 +338,8 @@ class _PlanScreenState extends State<PlanScreen> {
 
   void _reorder(int oldIndex, int newIndex) {
     setState(() {
+      // ReorderableListView.onReorder reports the index *before* the dragged
+      // item is taken out of the list, so a move down needs one less.
       if (newIndex > oldIndex) newIndex -= 1;
       final item = _stops.removeAt(oldIndex);
       _stops.insert(newIndex, item);
@@ -135,104 +347,94 @@ class _PlanScreenState extends State<PlanScreen> {
   }
 
   Future<void> _calculate() async {
+    if (_stops.length < 2) return;
+    if (!ApiService.instance.isAuthenticated) {
+      showInfo(context, 'Log in again to calculate a route.');
+      return;
+    }
     setState(() => _calculating = true);
     final typed = _title.text.trim();
     final title = typed.isEmpty ? 'Untitled route' : typed;
     final preset = _optimise == 0 ? 'fastest' : _optimise == 2 ? 'shortest' : 'balanced';
     final openPath = _routeType == 0;
 
-    String distStr = '34.6 km';
-    String timeStr = '1 hr 42 min';
-    String? savedPercent = '24%';
-    String tripId = DateTime.now().microsecondsSinceEpoch.toString();
-    List<Stop> finalStops = _stops;
-
-    if (ApiService.instance.isAuthenticated) {
-      try {
-        final stopPayloads = _stops.map((s) => {
-          'name': s.name,
-          'address': s.address,
-        }).toList();
-
-        final res = await ApiService.instance.createTrip(
-          title: title,
-          stops: stopPayloads,
-          openPath: openPath,
-          preset: preset,
-        );
-
-        tripId = res['id']?.toString() ?? tripId;
-        final run = res['latest_run'] as Map<String, dynamic>?;
-        final route = res['route'] as Map<String, dynamic>?;
-
-        final distM = (route?['total_distance_m'] ?? run?['total_distance_m']) as num?;
-        final durS = (route?['total_duration_s'] ?? run?['total_duration_s']) as num?;
-        final saved = (run?['percent_saved']) as num?;
-
-        if (distM != null) {
-          distStr = '${(distM / 1000).toStringAsFixed(1)} km';
-        }
-        if (durS != null) {
-          final mins = (durS / 60).round();
-          if (mins >= 60) {
-            final h = mins ~/ 60;
-            final m = mins % 60;
-            timeStr = '$h hr ${m > 0 ? '$m min' : ''}'.trim();
-          } else {
-            timeStr = '$mins min';
-          }
-        }
-        if (saved != null) {
-          savedPercent = '${saved.round()}%';
-        }
-
-        final serverStops = res['stops'] as List<dynamic>?;
-        if (serverStops != null && serverStops.isNotEmpty) {
-          final mapped = <Stop>[];
-          for (var i = 0; i < serverStops.length; i++) {
-            final st = serverStops[i] as Map<String, dynamic>;
-            mapped.add(Stop(
-              uid: _nextUid++,
-              name: (st['name'] as String?) ?? 'Stop ${i + 1}',
-              address: (st['address'] as String?) ?? '',
-            ));
-          }
-          finalStops = mapped;
-        }
-      } catch (_) {
-        // Fallback to local calculation if server has an issue
-      }
-    } else {
-      await Future<void>.delayed(const Duration(milliseconds: 1500));
-    }
-
-    if (!mounted) return;
-
-    appState.addTrip(
-      Trip(
-        id: tripId,
+    try {
+      final created = await ApiService.instance.createTrip(
         title: title,
-        stops: finalStops.length,
-        distance: distStr,
-        time: timeStr,
-        date: 'Just now',
-        savedPercent: savedPercent,
-        editedFrom: widget.editing ? widget.sourceTitle : null,
-      ),
-    );
+        stops: _stops.map((s) => s.toApiJson()).toList(),
+        openPath: openPath,
+        preset: preset,
+      );
+      final tripId = created['id'].toString();
 
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute<void>(
-        builder: (_) => RouteScreen(
-          tripId: tripId,
-          title: title,
-          initialStops: finalStops,
-          initialDistance: distStr,
-          initialTime: timeStr,
-          initialSavedPercent: savedPercent,
+      // The server answers straight away with a queued run; wait for the real
+      // route (order, distance, time and road geometry).
+      final detail = await ApiService.instance.waitForRun(
+        tripId,
+        timeout: const Duration(seconds: 45),
+      );
+      if (!mounted) return;
+
+      final run = detail['latest_run'];
+      if (run is Map && run['status'] == 'failed') {
+        setState(() => _calculating = false);
+        unawaited(appState.refreshTrips());
+        await _showProblem(
+          'The route could not be calculated',
+          (run['error_message'] as String?) ??
+              'Something went wrong while ordering your stops. Please try again.',
+        );
+        return;
+      }
+
+      unawaited(appState.refreshTrips());
+      if (!mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute<void>(
+          builder: (_) => RouteScreen(
+            tripId: tripId,
+            title: title,
+            initialDetail: detail,
+          ),
         ),
+        (route) => route.isFirst,
+      );
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _calculating = false);
+      if (e.unresolved.isNotEmpty) {
+        await _showProblem(
+          "We couldn't find some addresses",
+          '${e.unresolved.join('\n')}\n\nTap the ⋯ on each of these stops, then '
+              '"Set exact spot on map" to place a pin, or fix the spelling.',
+        );
+      } else {
+        await _showProblem('Could not calculate the route', e.message);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _calculating = false);
+      await _showProblem('Could not calculate the route', 'Something went wrong. Please try again.');
+    }
+  }
+
+  Future<void> _showProblem(String title, String message) {
+    final c = context.c;
+    return showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: c.surface,
+        title: Text(title, style: AppText.heading(18, c.ink)),
+        content: SingleChildScrollView(
+          child: Text(message, style: AppText.body(14.5, c.muted, height: 1.45)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('OK'),
+          ),
+        ],
       ),
-      (route) => route.isFirst,
     );
   }
 
@@ -301,15 +503,6 @@ class _PlanScreenState extends State<PlanScreen> {
               ],
             ),
           ),
-          if (wide)
-            Row(
-              children: [
-                Icon(Icons.check_rounded, size: 18, color: c.primary),
-                const SizedBox(width: 5),
-                Text('Draft saved',
-                    style: AppText.body(12.5, c.primary, weight: FontWeight.w700)),
-              ],
-            ),
         ],
       ),
     );
@@ -351,7 +544,6 @@ class _PlanScreenState extends State<PlanScreen> {
   // ---------------------------------------------------------------- bodies
 
   Widget _wideBody(BuildContext context) {
-    final mapHeight = math.min(MediaQuery.sizeOf(context).height * 0.56, 540.0);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 55, vertical: 30),
       child: Center(
@@ -367,7 +559,14 @@ class _PlanScreenState extends State<PlanScreen> {
               const SizedBox(width: 30),
               Expanded(
                 flex: 46,
-                child: _mapPanel(context, math.max(mapHeight, 400.0)),
+                // Size the map to the space that is really there, so a short
+                // window never overflows.
+                child: LayoutBuilder(
+                  builder: (context, constraints) => _mapPanel(
+                    context,
+                    math.max(220.0, math.min(560.0, constraints.maxHeight - 50)),
+                  ),
+                ),
               ),
             ],
           ),
@@ -384,7 +583,7 @@ class _PlanScreenState extends State<PlanScreen> {
         children: [
           _form(context),
           const SizedBox(height: 24),
-          _mapPanel(context, 210),
+          _mapPanel(context, 280),
         ],
       ),
     );
@@ -392,26 +591,56 @@ class _PlanScreenState extends State<PlanScreen> {
 
   Widget _mapPanel(BuildContext context, double height) {
     final c = context.c;
+    final markers = <MapMarkerData>[
+      for (var i = 0; i < _stops.length; i++)
+        if (_stops[i].hasLocation)
+          MapMarkerData(
+            point: LatLng(_stops[i].lat!, _stops[i].lng!),
+            label: '${i + 1}',
+            color: i == 0 ? c.accent : c.primary,
+          ),
+    ];
+    final pending = _stops.length - markers.length;
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        SizedBox(height: height, child: MiniMap(pinCount: math.min(_stops.length, 4))),
+        Container(
+          height: height,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: c.line),
+            boxShadow: c.shadow,
+          ),
+          child: RouteMap(markers: markers, radius: 22, fitPadding: const EdgeInsets.all(44)),
+        ),
         const SizedBox(height: 10),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.location_on_outlined, size: 16, color: c.ink),
-                const SizedBox(width: 5),
-                Text('${_stops.length} stops in Lagos',
-                    style: AppText.body(12, c.ink, weight: FontWeight.w700)),
-              ],
-            ),
-            if (!isCompact(context))
-              Text('Preview updates as you add stops',
-                  style: AppText.body(12, c.muted)),
-          ],
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Wrap(
+            spacing: 14,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.location_on_outlined, size: 16, color: c.ink),
+                  const SizedBox(width: 5),
+                  Text(
+                    markers.length == 1 ? '1 stop on the map' : '${markers.length} stops on the map',
+                    style: AppText.body(12, c.ink, weight: FontWeight.w700),
+                  ),
+                ],
+              ),
+              if (pending > 0)
+                Text(
+                  _resolving
+                      ? 'Locating $pending…'
+                      : '$pending not placed yet (found when you calculate)',
+                  style: AppText.body(12, c.warning),
+                ),
+            ],
+          ),
         ),
       ],
     );
@@ -477,7 +706,7 @@ class _PlanScreenState extends State<PlanScreen> {
               physics: const NeverScrollableScrollPhysics(),
               buildDefaultDragHandles: false,
               itemCount: _stops.length,
-              onReorderItem: (oldIndex, newIndex) => _reorder(oldIndex, newIndex),
+              onReorder: _reorder,
               proxyDecorator: (child, index, animation) =>
                   Material(color: c.surface, elevation: 6, child: child),
               itemBuilder: (context, index) {
@@ -486,6 +715,7 @@ class _PlanScreenState extends State<PlanScreen> {
                   key: ValueKey(stop.uid),
                   stop: stop,
                   index: index,
+                  onEdit: () => _editStop(stop),
                   onRemove: () => _removeStop(stop.uid),
                 );
               },
@@ -526,11 +756,22 @@ class _PlanScreenState extends State<PlanScreen> {
   Widget _addPanel(BuildContext context) {
     final c = context.c;
     final wide = isWide(context);
-    final methods = [
-      (Icons.location_on_outlined, 'Drop a pin', 'Choose on map'),
-      (Icons.my_location_rounded, 'My location', 'Use GPS'),
-      (Icons.content_copy_rounded, 'Paste addresses', 'Add many at once'),
+    final typed = _searchCtrl.text.trim();
+    final List<(IconData, String, String, VoidCallback?)> methods = [
+      (Icons.location_on_outlined, 'Drop a pin', 'Choose on map', _dropPin),
+      (
+        Icons.my_location_rounded,
+        'My location',
+        _locating ? 'Finding you…' : 'Use GPS',
+        _locating ? null : _useMyLocation,
+      ),
+      (Icons.content_copy_rounded, 'Paste addresses', 'Add many at once', _pasteAddresses),
     ];
+    final noMatch = !_searching &&
+        _searchError == null &&
+        typed.length >= 2 &&
+        _geocodeResults.isEmpty &&
+        _searchedQuery == typed;
     return Padding(
       padding: const EdgeInsets.only(top: 10),
       child: AppSurface(
@@ -540,7 +781,7 @@ class _PlanScreenState extends State<PlanScreen> {
           children: [
             AppTextField(
               icon: Icons.search_rounded,
-              placeholder: 'Search an address in Nigeria',
+              placeholder: 'Type a street, area or landmark',
               controller: _searchCtrl,
               onChanged: _onSearchChanged,
               suffixIcon: _searching
@@ -549,60 +790,104 @@ class _PlanScreenState extends State<PlanScreen> {
                       child: SizedBox(
                         width: 18,
                         height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: c.primary,
-                        ),
+                        child: CircularProgressIndicator(strokeWidth: 2, color: c.primary),
                       ),
                     )
                   : null,
             ),
-            if (_geocodeResults.isNotEmpty) ...
-              _geocodeResults.map(
-                (r) => InkWell(
-                  onTap: () => _addStopFromResult(r),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 5),
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 35,
-                          height: 35,
-                          decoration: BoxDecoration(
-                            color: c.primarySoft,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Icon(Icons.location_on_outlined, size: 20, color: c.primary),
+            for (final r in _geocodeResults)
+              InkWell(
+                onTap: () => _addStopFromResult(r),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 5),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 35,
+                        height: 35,
+                        decoration: BoxDecoration(
+                          color: c.primarySoft,
+                          borderRadius: BorderRadius.circular(10),
                         ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(r.name,
-                                  style: AppText.body(15, c.ink, weight: FontWeight.w500)),
-                              const SizedBox(height: 2),
-                              Text(r.address,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: AppText.body(12, c.muted)),
-                            ],
-                          ),
+                        child: Icon(Icons.location_on_outlined, size: 20, color: c.primary),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(r.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: AppText.body(15, c.ink, weight: FontWeight.w500)),
+                            const SizedBox(height: 2),
+                            Text(r.address,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: AppText.body(12, c.muted)),
+                          ],
                         ),
-                        Icon(Icons.add_rounded, size: 20, color: c.muted),
-                      ],
-                    ),
+                      ),
+                      const SizedBox(width: 6),
+                      Icon(Icons.add_rounded, size: 20, color: c.muted),
+                    ],
                   ),
                 ),
-            )
-            else if (_searchCtrl.text.isNotEmpty && !_searching)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 5),
-                child: Text('No results found. Try a different search.',
-                    style: AppText.body(13, c.muted)),
               ),
-            if (_geocodeResults.isNotEmpty || _searchCtrl.text.isNotEmpty)
-              Divider(height: 1, color: c.line),
+            if (_searchError != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(5, 12, 5, 4),
+                child: Text(
+                  '$_searchError You can still add the address as typed, or drop a pin.',
+                  style: AppText.body(13, c.danger, height: 1.4),
+                ),
+              )
+            else if (noMatch)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(5, 12, 5, 4),
+                child: Text(
+                  'No match for "$typed". Add it as typed, or drop a pin on the spot.',
+                  style: AppText.body(13, c.muted, height: 1.4),
+                ),
+              ),
+            if (typed.length >= 2)
+              InkWell(
+                onTap: _addTyped,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 5),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 35,
+                        height: 35,
+                        decoration: BoxDecoration(
+                          color: c.soft,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(Icons.keyboard_return_rounded, size: 19, color: c.ink),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Use "$typed" as typed',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: AppText.body(15, c.ink, weight: FontWeight.w500)),
+                            const SizedBox(height: 2),
+                            Text('Added without a map position. We try to find it when you calculate.',
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: AppText.body(12, c.muted)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            if (typed.length >= 2) Divider(height: 1, color: c.line),
             const SizedBox(height: 12),
             if (wide)
               Row(
@@ -615,7 +900,7 @@ class _PlanScreenState extends State<PlanScreen> {
                           icon: methods[i].$1,
                           title: methods[i].$2,
                           subtitle: methods[i].$3,
-                          onTap: () => showInfo(context, '${methods[i].$2} is coming soon'),
+                          onTap: methods[i].$4,
                         ),
                       ),
                     ),
@@ -631,7 +916,7 @@ class _PlanScreenState extends State<PlanScreen> {
                         icon: methods[i].$1,
                         title: methods[i].$2,
                         subtitle: methods[i].$3,
-                        onTap: () => showInfo(context, '${methods[i].$2} is coming soon'),
+                        onTap: methods[i].$4,
                       ),
                     ),
                 ],
@@ -652,14 +937,21 @@ class _PlanScreenState extends State<PlanScreen> {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Text('Route options', style: AppText.heading(18, c.ink)),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-              decoration: BoxDecoration(
-                color: c.primarySoft,
-                borderRadius: BorderRadius.circular(20),
+            const SizedBox(width: 10),
+            Flexible(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                decoration: BoxDecoration(
+                  color: c.primarySoft,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  tag,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.body(11.2, c.primary, weight: FontWeight.w700),
+                ),
               ),
-              child: Text(tag,
-                  style: AppText.body(11.2, c.primary, weight: FontWeight.w700)),
             ),
           ],
         ),
@@ -741,81 +1033,281 @@ class _StopRow extends StatelessWidget {
     super.key,
     required this.stop,
     required this.index,
+    required this.onEdit,
     required this.onRemove,
   });
 
   final Stop stop;
   final int index;
+  final VoidCallback onEdit;
   final VoidCallback onRemove;
 
   @override
   Widget build(BuildContext context) {
     final c = context.c;
     final isStart = index == 0;
-    return Container(
-      constraints: const BoxConstraints(minHeight: 76),
-      padding: const EdgeInsets.fromLTRB(12, 11, 8, 11),
-      decoration: BoxDecoration(
-        color: c.surface,
-        border: index == 0 ? null : Border(top: BorderSide(color: c.line)),
+    return Material(
+      color: c.surface,
+      child: InkWell(
+        onTap: onEdit,
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 76),
+          padding: const EdgeInsets.fromLTRB(12, 11, 8, 11),
+          decoration: BoxDecoration(
+            border: index == 0 ? null : Border(top: BorderSide(color: c.line)),
+          ),
+          child: Row(
+            children: [
+              ReorderableDragStartListener(
+                index: index,
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Icon(Icons.drag_indicator_rounded, size: 22, color: AppColors.dragHandle),
+                ),
+              ),
+              const SizedBox(width: 9),
+              Container(
+                width: 29,
+                height: 29,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: isStart ? c.accent : c.primary,
+                  shape: BoxShape.circle,
+                ),
+                child: isStart
+                    ? const Icon(Icons.home_outlined, size: 15, color: Colors.white)
+                    : Text('${index + 1}',
+                        style: AppText.body(12, Colors.white, weight: FontWeight.w800)),
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(stop.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.body(14, c.ink, weight: FontWeight.w700)),
+                    const SizedBox(height: 3),
+                    Text(stop.address,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.body(12, c.muted)),
+                    if (isStart)
+                      Text('START HERE',
+                          style: AppText.body(10.7, c.accent,
+                              weight: FontWeight.w700, letterSpacing: 0.55)),
+                    if (!stop.hasLocation)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 3),
+                        child: Text(
+                          'Not on the map yet. Tap to set the spot.',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.body(11, c.warning, weight: FontWeight.w600),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              AppIconButton(
+                icon: Icons.edit_outlined,
+                label: 'Edit ${stop.name}',
+                onPressed: onEdit,
+              ),
+              AppIconButton(
+                icon: Icons.close_rounded,
+                label: 'Remove ${stop.name}',
+                onPressed: onRemove,
+              ),
+            ],
+          ),
+        ),
       ),
-      child: Row(
-        children: [
-          ReorderableDragStartListener(
-            index: index,
-            child: const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Icon(Icons.drag_indicator_rounded, size: 22, color: AppColors.dragHandle),
-            ),
-          ),
-          const SizedBox(width: 9),
-          Container(
-            width: 29,
-            height: 29,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: isStart ? c.accent : c.primary,
-              shape: BoxShape.circle,
-            ),
-            child: isStart
-                ? const Icon(Icons.home_outlined, size: 15, color: Colors.white)
-                : Text('${index + 1}',
-                    style: AppText.body(12, Colors.white, weight: FontWeight.w800)),
-          ),
-          const SizedBox(width: 9),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    );
+  }
+}
+
+/// Edit a stop's name, address and exact position.
+class _EditStopSheet extends StatefulWidget {
+  const _EditStopSheet({required this.stop});
+
+  final Stop stop;
+
+  @override
+  State<_EditStopSheet> createState() => _EditStopSheetState();
+}
+
+class _EditStopSheetState extends State<_EditStopSheet> {
+  late final TextEditingController _name = TextEditingController(text: widget.stop.name);
+  late final TextEditingController _address = TextEditingController(text: widget.stop.address);
+  late double? _lat = widget.stop.lat;
+  late double? _lng = widget.stop.lng;
+  late String? _source = widget.stop.source;
+  late String? _placeId = widget.stop.placeId;
+
+  bool get _hasLocation => _lat != null && _lng != null;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _address.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickOnMap() async {
+    final result = await Navigator.of(context).push<GeocodeResult>(
+      MaterialPageRoute<GeocodeResult>(
+        builder: (_) => PinPickerScreen(
+          initialPoint: _hasLocation ? LatLng(_lat!, _lng!) : null,
+          initialName: _name.text.trim(),
+          initialAddress: _address.text.trim(),
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() {
+      _lat = result.lat;
+      _lng = result.lng;
+      _source = 'manual_pin';
+      _placeId = null;
+      if (_name.text.trim().isEmpty) _name.text = result.name;
+      if (_address.text.trim().isEmpty) _address.text = result.address;
+    });
+  }
+
+  void _save() {
+    final name = _name.text.trim();
+    if (name.isEmpty) {
+      showInfo(context, 'Give the stop a name.');
+      return;
+    }
+    Navigator.of(context).pop(
+      Stop(
+        uid: widget.stop.uid,
+        name: name,
+        address: _address.text.trim(),
+        lat: _lat,
+        lng: _lng,
+        source: _source,
+        placeId: _placeId,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: EdgeInsets.fromLTRB(
+          20,
+          0,
+          20,
+          16 + MediaQuery.viewInsetsOf(context).bottom,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Edit stop', style: AppText.heading(18, c.ink)),
+            const SizedBox(height: 16),
+            AppTextField(label: 'Name', controller: _name),
+            const SizedBox(height: 14),
+            AppTextField(label: 'Address or landmark', controller: _address),
+            const SizedBox(height: 14),
+            Row(
               children: [
-                Text(stop.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: AppText.body(14, c.ink, weight: FontWeight.w700)),
-                const SizedBox(height: 3),
-                Text(stop.address,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: AppText.body(12, c.muted)),
-                if (isStart)
-                  Text('START HERE',
-                      style: AppText.body(10.7, c.accent,
-                          weight: FontWeight.w700, letterSpacing: 0.55)),
+                Icon(
+                  _hasLocation ? Icons.check_circle_outline_rounded : Icons.info_outline_rounded,
+                  size: 18,
+                  color: _hasLocation ? c.primary : c.warning,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _hasLocation
+                        ? 'Position set (${_lat!.toStringAsFixed(5)}, ${_lng!.toStringAsFixed(5)})'
+                        : 'No map position yet. Set the exact spot to be sure.',
+                    style: AppText.body(13, _hasLocation ? c.muted : c.warning),
+                  ),
+                ),
               ],
             ),
-          ),
-          if (!isCompact(context))
-            AppIconButton(
-              icon: Icons.more_horiz_rounded,
-              label: 'Edit ${stop.name}',
-              onPressed: () => showInfo(context, 'Editing a stop is coming soon'),
+            const SizedBox(height: 12),
+            AppButton(
+              label: _hasLocation ? 'Change spot on map' : 'Set exact spot on map',
+              icon: Icons.location_on_outlined,
+              variant: ButtonVariant.secondary,
+              expand: true,
+              onPressed: _pickOnMap,
             ),
-          AppIconButton(
-            icon: Icons.close_rounded,
-            label: 'Remove ${stop.name}',
-            onPressed: onRemove,
-          ),
-        ],
+            const SizedBox(height: 10),
+            AppButton(label: 'Save', expand: true, onPressed: _save),
+          ],
+        ),
       ),
+    );
+  }
+}
+
+/// One address per line.
+class _PasteAddressesDialog extends StatefulWidget {
+  const _PasteAddressesDialog();
+
+  @override
+  State<_PasteAddressesDialog> createState() => _PasteAddressesDialogState();
+}
+
+class _PasteAddressesDialogState extends State<_PasteAddressesDialog> {
+  final TextEditingController _text = TextEditingController();
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return AlertDialog(
+      backgroundColor: c.surface,
+      title: Text('Paste addresses', style: AppText.heading(18, c.ink)),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Put one address on each line.', style: AppText.body(13.5, c.muted)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _text,
+              autofocus: true,
+              minLines: 5,
+              maxLines: 10,
+              keyboardType: TextInputType.multiline,
+              style: AppText.body(14.5, c.ink),
+              decoration: InputDecoration(
+                hintText: '12 Adeola Odeku St, Victoria Island\n5 Allen Avenue, Ikeja',
+                hintStyle: AppText.body(14, AppColors.placeholder),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(_text.text),
+          child: const Text('Add stops'),
+        ),
+      ],
     );
   }
 }
@@ -831,7 +1323,7 @@ class _MethodButton extends StatelessWidget {
   final IconData icon;
   final String title;
   final String subtitle;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {

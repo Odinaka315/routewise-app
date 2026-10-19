@@ -98,7 +98,8 @@ class _Sidebar extends StatelessWidget {
             const SizedBox(height: 7),
             _SideItem(icon: Icons.settings_outlined, label: 'Settings', active: tab == 1, onTap: onSettings),
             const Spacer(),
-            Container(
+            // The tip card is the first thing to go when the window is short.
+            if (MediaQuery.sizeOf(context).height >= 680) Container(
               width: double.infinity,
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
@@ -128,7 +129,7 @@ class _Sidebar extends StatelessWidget {
                 ],
               ),
             ),
-            const SizedBox(height: 18),
+            if (MediaQuery.sizeOf(context).height >= 680) const SizedBox(height: 18),
             Divider(height: 1, color: Colors.white.withValues(alpha: 0.12)),
             Material(
               color: Colors.transparent,

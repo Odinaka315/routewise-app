@@ -27,4 +27,26 @@ class AppConfig {
 
   /// Threshold after which a "Server is waking up" notification is shown.
   static const Duration slowResponseNoticeDelay = Duration(seconds: 3);
+
+  // ---------------------------------------------------------------- maps
+
+  /// Where the map and address search start before the rider has any stops.
+  /// This is central Lagos (Yaba / Ikeja area).
+  static const double defaultLat = 6.5244;
+  static const double defaultLng = 3.3792;
+
+  /// Mapbox PUBLIC access token (starts with "pk."). Optional.
+  ///
+  /// Without it the app uses OpenStreetMap / CARTO tiles, which are free but
+  /// are meant for light use. Before a public release, pass a token so the map
+  /// tiles come from Mapbox instead:
+  ///
+  ///     flutter run --dart-define=MAPBOX_TOKEN=pk.your-token-here
+  ///
+  /// A public token is designed to be shipped inside an app. Restrict it to
+  /// your app in the Mapbox dashboard. Never put a secret (sk.) token here.
+  static const String mapboxToken = String.fromEnvironment('MAPBOX_TOKEN');
+
+  /// Sent with every map tile request (OpenStreetMap requires an identifier).
+  static const String mapUserAgent = androidPackage;
 }

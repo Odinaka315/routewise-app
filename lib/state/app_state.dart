@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../data/api_models.dart';
 import '../data/models.dart';
 import '../services/api_service.dart';
 
@@ -183,6 +184,7 @@ class AppState extends ChangeNotifier {
           final distM = (item['total_distance_m'] as num?)?.toDouble();
           final durS = (item['total_duration_s'] as num?)?.toDouble();
           final createdAt = item['created_at']?.toString() ?? '';
+          final runStatus = (item['latest_run'] as Map?)?['status'] as String?;
 
           String distStr = '0 km';
           if (distM != null) {
@@ -227,6 +229,8 @@ class AppState extends ChangeNotifier {
               time: timeStr,
               date: dateStr,
               starred: isStarred,
+              failed: runStatus == 'failed',
+              calculating: runStatus == 'queued' || runStatus == 'running',
               distanceM: distM,
               durationS: durS,
               createdAt: dt,
@@ -270,6 +274,36 @@ class AppState extends ChangeNotifier {
         notifyListeners();
       }
     }
+  }
+
+  /// Rename a trip on the server, then reload the list.
+  Future<void> renameTrip(String id, String title) async {
+    await ApiService.instance.patchTrip(id, title: title);
+    await refreshTrips();
+  }
+
+  /// Delete a trip on the server and drop it from the list.
+  Future<void> deleteTrip(String id) async {
+    await ApiService.instance.deleteTrip(id);
+    _trips = _trips.where((t) => t.id != id).toList();
+    notifyListeners();
+  }
+
+  /// Run a trip's calculation again (used by "Try again" on a failed trip).
+  Future<void> retryTrip(String id) async {
+    try {
+      await ApiService.instance.recalculateTrip(id);
+    } on ApiException catch (e) {
+      if (e.statusCode != 409) rethrow; // 409: already being calculated
+    }
+    await refreshTrips();
+  }
+
+  /// Change the display name on the server.
+  Future<void> updateDisplayName(String name) async {
+    final user = await ApiService.instance.updateProfile(displayName: name);
+    _userName = user.displayName ?? user.email.split('@').first;
+    notifyListeners();
   }
 
   void addTrip(Trip trip) {
