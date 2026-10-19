@@ -338,9 +338,8 @@ class _PlanScreenState extends State<PlanScreen> {
 
   void _reorder(int oldIndex, int newIndex) {
     setState(() {
-      // ReorderableListView.onReorder reports the index *before* the dragged
-      // item is taken out of the list, so a move down needs one less.
-      if (newIndex > oldIndex) newIndex -= 1;
+      // onReorderItem already reports the final index (after the dragged item
+      // is taken out), so no adjustment is needed.
       final item = _stops.removeAt(oldIndex);
       _stops.insert(newIndex, item);
     });
@@ -706,7 +705,7 @@ class _PlanScreenState extends State<PlanScreen> {
               physics: const NeverScrollableScrollPhysics(),
               buildDefaultDragHandles: false,
               itemCount: _stops.length,
-              onReorder: _reorder,
+              onReorderItem: _reorder,
               proxyDecorator: (child, index, animation) =>
                   Material(color: c.surface, elevation: 6, child: child),
               itemBuilder: (context, index) {

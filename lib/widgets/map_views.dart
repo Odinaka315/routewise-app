@@ -165,7 +165,6 @@ class _MapBase extends StatelessWidget {
     required this.labels,
     required this.pinSize,
     required this.largeStyle,
-    this.overlay,
   });
 
   final _MapData data;
@@ -175,7 +174,6 @@ class _MapBase extends StatelessWidget {
 
   /// Result map style: home icon on the first pin, dark last pin.
   final bool largeStyle;
-  final Widget? overlay;
 
   @override
   Widget build(BuildContext context) {
@@ -213,7 +211,6 @@ class _MapBase extends StatelessWidget {
                       : (largeStyle && i == pins.length - 1 ? c.ink : c.primary),
                 ),
               ),
-            if (overlay != null) overlay!,
           ],
         );
       },
