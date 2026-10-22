@@ -636,6 +636,7 @@ class _RouteScreenState extends State<RouteScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (_loadingDetail || _runActive || _runStatus == 'failed') ...[
         Row(
           children: [
             Container(
@@ -669,7 +670,8 @@ class _RouteScreenState extends State<RouteScreen> {
             ),
           ],
         ),
-        const SizedBox(height: 19),
+        const SizedBox(height: 14),
+        ],
         Row(
           children: [
             Expanded(
@@ -706,7 +708,7 @@ class _RouteScreenState extends State<RouteScreen> {
             ],
           ],
         ),
-        const SizedBox(height: 22),
+        const SizedBox(height: 18),
         _statusBanner(context),
         _summary(context, stops.length),
         const SizedBox(height: 17),
@@ -723,12 +725,10 @@ class _RouteScreenState extends State<RouteScreen> {
           const SizedBox(height: 9),
           edit,
         ],
-        const SizedBox(height: 29),
+        const SizedBox(height: 24),
         Row(
           children: [
             Flexible(child: Text('Stop order', style: AppText.heading(18, c.ink))),
-            const SizedBox(width: 8),
-            const CountBadge('Optimised'),
             const Spacer(),
             TextAction(label: 'Run history', icon: Icons.history_rounded, onPressed: _history),
           ],
@@ -789,7 +789,6 @@ class _RouteScreenState extends State<RouteScreen> {
     final cells = [
       (Icons.map_outlined, 'Total distance', _distance),
       (Icons.schedule_rounded, 'Estimated time', _time),
-      (Icons.location_on_outlined, 'Stops', '${stopCount > 0 ? stopCount : '—'} stops'),
     ];
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 4),

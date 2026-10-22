@@ -43,6 +43,9 @@ class NavigationScreen extends StatefulWidget {
 
 class _NavigationScreenState extends State<NavigationScreen> with WidgetsBindingObserver {
   final GlobalKey<RouteMapState> _mapKey = GlobalKey<RouteMapState>();
+  final DraggableScrollableController _sheetCtl = DraggableScrollableController();
+  double _sheetSize = 0.5; // current height of the bottom sheet, as a fraction of the screen
+  double _sheetMin = 0.14;
   late final Set<int> _done = <int>{0}; // the starting point needs no delivery
   late int _current;
   bool _launched = false;
@@ -56,12 +59,15 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _sheetCtl.addListener(_onSheetMoved);
     _current = _stops.length > 1 ? 1 : 0;
     if (_stops.length <= 1) _done.add(0);
   }
 
   @override
   void dispose() {
+    _sheetCtl.removeListener(_onSheetMoved);
+    _sheetCtl.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -177,7 +183,12 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     return (markers: markers, stopIndexes: indexes);
   }
 
-  Widget _map(BuildContext context, bool wide) {
+  Widget _map(
+    BuildContext context,
+    bool wide, {
+    double controlsBottom = 14,
+    double fitBottom = 50,
+  }) {
     final c = context.c;
     final data = _markers(c);
     return Stack(
@@ -189,8 +200,8 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
             line: widget.line,
             lineIsApproximate: widget.lineIsApproximate,
             largePins: true,
-            fitPadding: const EdgeInsets.fromLTRB(40, 90, 40, 50),
-            controlsBottom: 14,
+            fitPadding: EdgeInsets.fromLTRB(40, 90, 40, fitBottom),
+            controlsBottom: controlsBottom,
             onMarkerTap: (i) => _select(data.stopIndexes[i]),
           ),
         ),
@@ -270,14 +281,22 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     );
   }
 
-  Widget _currentCard(BuildContext context) {
+  Widget _currentCard(BuildContext context, {bool showInfoCard = true}) {
     final c = context.c;
     final stop = _stops[_current];
     final waze = NavigationService.wazeTo(stop);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        AppSurface(
+        if (!showInfoCard) ...[
+          if (stop.address.isNotEmpty)
+            Text(stop.address, style: AppText.body(14, c.muted, height: 1.4)),
+          if (stop.legSummary != null) ...[
+            const SizedBox(height: 6),
+            Text('${stop.legSummary} from previous stop',
+                style: AppText.body(12.5, c.primary, weight: FontWeight.w700)),
+          ],
+        ] else AppSurface(
           padding: const EdgeInsets.all(16),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -480,11 +499,173 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     );
   }
 
+  // ---------------------------------------------------------------- sheet
+
+  void _onSheetMoved() {
+    if (!_sheetCtl.isAttached) return;
+    final size = _sheetCtl.size;
+    if ((size - _sheetSize).abs() > 0.004 && mounted) setState(() => _sheetSize = size);
+  }
+
+  /// Tap the grab handle: collapse the sheet to reveal the map, or bring it back.
+  void _toggleSheet() {
+    if (!_sheetCtl.isAttached) return;
+    final collapse = _sheetCtl.size > _sheetMin + 0.15;
+    _sheetCtl.animateTo(
+      collapse ? _sheetMin : 0.5,
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  /// The always-visible strip of the sheet: where to go next, and a one-tap
+  /// way to start the directions even while the map is nearly full screen.
+  Widget _peek(BuildContext context) {
+    final c = context.c;
+    if (_stops.length < 2) {
+      return Text('Needs at least two stops', style: AppText.body(15, c.muted));
+    }
+    if (_finished) {
+      return Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(color: c.primarySoft, shape: BoxShape.circle),
+            child: Icon(Icons.check_rounded, color: c.primary),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text('All $_total stops delivered',
+                style: AppText.heading(17, c.ink), maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+        ],
+      );
+    }
+    final stop = _stops[_current];
+    return Row(
+      children: [
+        Container(
+          width: 40,
+          height: 40,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(color: c.blue, shape: BoxShape.circle),
+          child: Text('${_current + 1}',
+              style: AppText.body(15, Colors.white, weight: FontWeight.w800)),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(stop.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.heading(17, c.ink, height: 1.2)),
+              const SizedBox(height: 2),
+              Text('Next stop · $_deliveredCount of $_total done',
+                  maxLines: 1, overflow: TextOverflow.ellipsis, style: AppText.body(12.5, c.muted)),
+            ],
+          ),
+        ),
+        const SizedBox(width: 10),
+        Material(
+          color: c.primary,
+          shape: const CircleBorder(),
+          clipBehavior: Clip.antiAlias,
+          child: Tooltip(
+            message: 'Navigate in Google Maps',
+            child: InkWell(
+              onTap: () => _navigate(NavigationService.googleMapsTo(stop), 'Google Maps'),
+              child: const SizedBox(
+                width: 46,
+                height: 46,
+                child: Icon(Icons.navigation_rounded, color: Colors.white, size: 22),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _sheet(BuildContext context, double height) {
+    final c = context.c;
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
+    // Smallest the sheet can get: handle + the "next stop" strip.
+    _sheetMin = math.max(0.1, math.min(0.3, (96 + bottomInset) / height));
+    final radius = const BorderRadius.vertical(top: Radius.circular(24));
+    return DraggableScrollableSheet(
+      controller: _sheetCtl,
+      initialChildSize: math.max(_sheetSize, _sheetMin),
+      minChildSize: _sheetMin,
+      maxChildSize: 0.92,
+      snap: true,
+      snapSizes: const [0.5],
+      builder: (context, scroll) => DecoratedBox(
+        decoration: BoxDecoration(
+          color: c.surface,
+          borderRadius: radius,
+          boxShadow: const [
+            BoxShadow(color: Color(0x2E000000), blurRadius: 20, offset: Offset(0, -4)),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: radius,
+          child: ListView(
+            controller: scroll,
+            padding: EdgeInsets.fromLTRB(18, 0, 18, 24 + bottomInset),
+            children: [
+              InkWell(
+                onTap: _toggleSheet,
+                child: SizedBox(
+                  height: 28,
+                  child: Center(
+                    child: Container(
+                      width: 42,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: c.line,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              _peek(context),
+              if (_stops.length >= 2) ...[
+                const SizedBox(height: 16),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: LinearProgressIndicator(
+                    value: _total == 0 ? 1 : _deliveredCount / _total,
+                    minHeight: 6,
+                    color: c.primary,
+                    backgroundColor: c.soft,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (_finished)
+                  _finishedCard(context)
+                else
+                  _currentCard(context, showInfoCard: false),
+                const SizedBox(height: 26),
+                Text('All stops', style: AppText.heading(17, c.ink)),
+                const SizedBox(height: 6),
+                Divider(height: 1, color: c.line),
+                for (var i = 0; i < _stops.length; i++) _stopTile(context, i),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.c;
     final wide = isWide(context);
-    final height = MediaQuery.sizeOf(context).height;
     if (wide) {
       return Scaffold(
         backgroundColor: c.surface,
@@ -502,26 +683,28 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
         ),
       );
     }
+    // Phone: the map fills the screen and the details sit in a sheet that can
+    // be dragged down (map almost full screen) or up (details).
     return Scaffold(
       backgroundColor: c.surface,
-      body: Column(
-        children: [
-          SizedBox(
-            height: math.max(230.0, math.min(420.0, height * 0.36)),
-            child: _map(context, wide),
-          ),
-          Expanded(
-            child: SingleChildScrollView(
-              padding: EdgeInsets.fromLTRB(
-                18,
-                18,
-                18,
-                24 + MediaQuery.paddingOf(context).bottom,
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final height = constraints.maxHeight;
+          final controlsBottom = math.min(_sheetSize * height + 14, height - 280);
+          return Stack(
+            children: [
+              Positioned.fill(
+                child: _map(
+                  context,
+                  wide,
+                  controlsBottom: math.max(14, controlsBottom),
+                  fitBottom: height * 0.5 + 20,
+                ),
               ),
-              child: _panel(context),
-            ),
-          ),
-        ],
+              Positioned.fill(child: _sheet(context, height)),
+            ],
+          );
+        },
       ),
     );
   }

@@ -89,9 +89,11 @@ class _TripsScreenState extends State<TripsScreen> {
                   _header(context, wide),
                   SizedBox(height: wide ? 32 : 25),
                   _stats(context, wide),
-                  const SizedBox(height: 32),
-                  _starredSection(context, wide, starred),
-                  const SizedBox(height: 39),
+                  const SizedBox(height: 26),
+                  if (starred.isNotEmpty && !_starredOnly) ...[
+                    _starredSection(context, wide, starred),
+                    const SizedBox(height: 28),
+                  ],
                   _allTrips(context, wide, trips.length, filtered),
                 ],
               ),
@@ -207,10 +209,7 @@ class _TripsScreenState extends State<TripsScreen> {
   Widget _starredSection(BuildContext context, bool wide, List<Trip> starred) {
     final c = context.c;
     Widget content;
-    if (starred.isEmpty) {
-      content = Text('No starred trips yet. Tap the star on a trip to pin it here.',
-          style: AppText.body(14, c.muted));
-    } else if (wide) {
+    if (wide) {
       content = LayoutBuilder(
         builder: (context, constraints) {
           final cardWidth = (constraints.maxWidth - 14) / 2;
@@ -258,14 +257,9 @@ class _TripsScreenState extends State<TripsScreen> {
             const Icon(Icons.star_rounded, size: 20, color: AppColors.star),
             const SizedBox(width: 9),
             Text('Starred trips', style: AppText.heading(18, c.ink)),
-            const Spacer(),
-            TextAction(
-              label: _starredOnly ? 'Show all' : 'View all',
-              onPressed: () => setState(() => _starredOnly = !_starredOnly),
-            ),
           ],
         ),
-        const SizedBox(height: 15),
+        const SizedBox(height: 12),
         content,
       ],
     );
