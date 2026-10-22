@@ -146,7 +146,9 @@ class ApiService {
         isTimeout: true,
       );
     }
-    if (error is ApiException) {
+    // Re-throw ApiExceptions as they are, except the placeholder created for a
+    // failed HTTP response: that one still has to be read for the server's reason.
+    if (error is ApiException && responseBody == null) {
       return error;
     }
 
