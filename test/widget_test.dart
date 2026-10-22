@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:routewise/data/models.dart';
 import 'package:routewise/services/navigation_service.dart';
 import 'package:routewise/utils/format.dart';
@@ -83,6 +84,30 @@ void main() {
       expect(link.uri.queryParameters['origin'], '6.5,3.3');
       expect(link.uri.queryParameters['waypoints'], '6.6,3.4');
       expect(link.uri.queryParameters['destination'], '6.7,3.5');
+    });
+  });
+
+  group('splitLineByStops', () {
+    final line = [
+      LatLng(6.50, 3.30),
+      LatLng(6.51, 3.31),
+      LatLng(6.52, 3.32),
+      LatLng(6.53, 3.33),
+      LatLng(6.54, 3.34),
+    ];
+
+    test('cuts the line at each stop, sharing the stop point', () {
+      final pieces = splitLineByStops(line, [line[0], line[2], line[4]]);
+      expect(pieces, hasLength(2));
+      expect(pieces[0].first, line[0]);
+      expect(pieces[0].last, line[2]);
+      expect(pieces[1].first, line[2]);
+      expect(pieces[1].last, line[4]);
+    });
+
+    test('returns the whole line when it cannot be split', () {
+      expect(splitLineByStops(line, [line[0], line[4]]), hasLength(1));
+      expect(splitLineByStops(const [], [line[0], line[2], line[4]]), hasLength(1));
     });
   });
 

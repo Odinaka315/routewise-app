@@ -461,6 +461,10 @@ class _RouteScreenState extends State<RouteScreen> {
             markers: _markers(c),
             line: _line,
             lineIsApproximate: _lineIsApproximate,
+            stopPoints: [
+              for (final s in _stops)
+                if (s.hasLocation) LatLng(s.lat!, s.lng!),
+            ],
             largePins: true,
             fitPadding: EdgeInsets.fromLTRB(44, top + 70, 44, wide ? 70 : 90),
             controlsBottom: wide ? 24 : 48,

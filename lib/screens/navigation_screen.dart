@@ -199,6 +199,10 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
             markers: data.markers,
             line: widget.line,
             lineIsApproximate: widget.lineIsApproximate,
+            stopPoints: [
+              for (final s in _stops)
+                if (s.hasLocation) LatLng(s.lat!, s.lng!),
+            ],
             largePins: true,
             fitPadding: EdgeInsets.fromLTRB(40, 90, 40, fitBottom),
             controlsBottom: controlsBottom,

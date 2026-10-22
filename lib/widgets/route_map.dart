@@ -8,6 +8,7 @@ import '../config/app_config.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_theme.dart';
 import 'buttons.dart';
+import '../utils/polyline.dart';
 import 'map_views.dart';
 
 /// One pin on a [RouteMap].
@@ -80,6 +81,20 @@ List<_TileStyle> _tileStyles() {
   ];
 }
 
+/// Colours for the legs of a route (stop 1 -> 2 is the first colour, and so on).
+const List<Color> legColors = [
+  Color(0xFF0D684F), // green
+  Color(0xFF3D77D3), // blue
+  Color(0xFFF36F4B), // coral
+  Color(0xFF8E5BD0), // purple
+  Color(0xFFE0A100), // amber
+  Color(0xFFD6458F), // pink
+  Color(0xFF0891B2), // cyan
+  Color(0xFFB4532A), // brown
+  Color(0xFF5B8C00), // lime
+  Color(0xFF4F46E5), // indigo
+];
+
 /// The base map tiles, shared by every map in the app so they look the same.
 TileLayer buildBaseTileLayer([int styleIndex = 0]) {
   final styles = _tileStyles();
@@ -109,6 +124,7 @@ class RouteMap extends StatefulWidget {
     required this.markers,
     this.line = const [],
     this.lineIsApproximate = false,
+    this.stopPoints = const [],
     this.largePins = false,
     this.fitPadding = const EdgeInsets.all(48),
     this.radius = 0,
@@ -124,6 +140,9 @@ class RouteMap extends StatefulWidget {
 
   /// True when [line] is just straight lines between stops (no road geometry).
   final bool lineIsApproximate;
+
+  /// The stops in visiting order. When given, each leg of [line] gets its own colour.
+  final List<LatLng> stopPoints;
 
   final bool largePins;
   final EdgeInsets fitPadding;
@@ -208,6 +227,25 @@ class RouteMapState extends State<RouteMap> {
     _controller.move(camera.center, math.max(3.0, math.min(19.0, camera.zoom + delta)));
   }
 
+  List<Polyline> _polylines(AppColors c) {
+    final legs = widget.stopPoints.length >= 3
+        ? splitLineByStops(widget.line, widget.stopPoints)
+        : [widget.line];
+    final multi = legs.length > 1;
+    return [
+      for (var i = 0; i < legs.length; i++)
+        Polyline(
+          points: legs[i],
+          strokeWidth: 5,
+          color: multi
+              ? legColors[i % legColors.length].withValues(alpha: widget.lineIsApproximate ? 0.6 : 1)
+              : (widget.lineIsApproximate ? c.primary.withValues(alpha: 0.55) : c.primary),
+          borderStrokeWidth: 2.5,
+          borderColor: Colors.white,
+        ),
+    ];
+  }
+
   Marker _marker(MapMarkerData m, int index) {
     final base = widget.largePins ? 36.0 : 29.0;
     final size = base * (m.emphasised ? 1.25 : 1.0);
@@ -284,19 +322,7 @@ class RouteMapState extends State<RouteMap> {
                   children: [
                     buildBaseTileLayer(_styleIndex),
                     if (widget.line.length >= 2)
-                      PolylineLayer(
-                        polylines: [
-                          Polyline(
-                            points: widget.line,
-                            strokeWidth: 5,
-                            color: widget.lineIsApproximate
-                                ? c.primary.withValues(alpha: 0.55)
-                                : c.primary,
-                            borderStrokeWidth: 2.5,
-                            borderColor: Colors.white,
-                          ),
-                        ],
-                      ),
+                      PolylineLayer(polylines: _polylines(c)),
                     MarkerLayer(
                       markers: [for (final i in order) _marker(widget.markers[i], i)],
                     ),
